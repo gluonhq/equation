@@ -33,13 +33,13 @@ We publish releases in the gluon nexus repository, hence that one needs to be
 added to a `pom.xml` if you want to use it.
 
 The `libsignal-service-java` depends on `libsignal-metadata-java` which is in
-the gluon branch of `https://github.com/johanvos/libsignal-service-java`,
+the gluon branch of https://github.com/johanvos/libsignal-service-java,
 which again is a fork of the original Signal repository.
 
 The `libsignal-metadata-java` depends on `libsignal-protocol-java` which is in
-the gluon branch of `https://github.com/johanvos/libsignal-metadata-java`,
+the gluon branch of https://github.com/johanvos/libsignal-metadata-java,
 which again is a fork of the original Signal repository.
 
 The `libsignal-protocol-java` depends on `curve25519-java` which is in
-the gluon branch of `https://github.com/johanvos/curve25519-java`,
+the gluon branch of https://github.com/johanvos/curve25519-java,
 which again is a fork of the original Signal repository.
