@@ -507,6 +507,10 @@ public class WaveManager {
                     } catch (InvalidMetadataVersionException invalidm) {
                         System.err.println("Invalid MetadataVersion: "+invalidm);
                         invalidm.printStackTrace();
+                    } catch (IOException ioex) {
+                        WAVELOG.log(Level.WARNING, "ioexception while reading messages, consider this fatal for now.");
+                        listen = false;
+                        ioex.printStackTrace();
                     } catch (Exception ex) {
                         // listen = false;
                         ex.printStackTrace();
@@ -515,6 +519,7 @@ public class WaveManager {
 
                     }
                 }
+                WAVELOG.log(Level.INFO, "We stopped listening for incoming messages.");
             }
         };
         t.start();
