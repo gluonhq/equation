@@ -174,7 +174,6 @@ public class ProvisioningManager {
                 this.pm = provisioningCipher.decrypt(envelope);
                 this.number = pm.getNumber();
                 provisioningClient.gotProvisionMessage(pm.getNumber());
-                this.stop();
             } catch (Exception ex) {
                 ex.printStackTrace();
             }
