@@ -109,6 +109,8 @@ public class WaveManager {
 
     public final static File SIGNAL_FX_CONTACTS_DIR;
     
+    private CountDownLatch syncContactsLatch;
+    
     static {
         Security.addProvider(new BouncyCastleProvider());
         Security.setProperty("crypto.policy", "unlimited");
@@ -130,6 +132,8 @@ public class WaveManager {
     private SignalServiceMessageReceiver receiver;
     private SignalServiceMessageSender sender;
     private SignalServiceMessagePipe messagePipe;
+    private SignalServiceMessagePipe unidentifiedMessagePipe;
+    
     private SignalServiceAddress signalServiceAddress;
     private boolean contactStorageDirty = true;
     private ProvisioningManager provisioningManager;
@@ -204,6 +208,7 @@ public class WaveManager {
      * connection is only created once.
      */
     public void ensureConnected() throws IOException {
+        WAVELOG.log(Level.INFO, "ensure connected? "+connected);
         if (connected) {
             return;
         }
@@ -217,22 +222,55 @@ public class WaveManager {
      * @throws IOException 
      */
     public void connect() throws IOException {
+        WAVELOG.log(Level.INFO, "[WM] connecting");
         this.receiver = createMessageReceiver();
         this.sender = createMessageSender(receiver);
         this.connected = true;
+        WAVELOG.log(Level.INFO, "[WM] connected");
     }
 
+    public void initialize() {
+            try {
+                getWaveLogger().log(Level.DEBUG, "ensure we are connected");
+                this.ensureConnected();
+                getWaveLogger().log(Level.DEBUG, "we are connected, let's sync");
+                syncEverything();
+                getWaveLogger().log(Level.DEBUG, "sync requests are sent");
+                startListening();
+            } catch (IOException ex) {
+                ex.printStackTrace();
+                System.err.println("We're offline. Not much we can do now!");
+            }
+    }
     /**
      * Starts listening for incoming messages. At this point, we need to be connected.
      */
-    public void startListening() {
+    private void startListening() {
+        WAVELOG.log(Level.INFO, "[WM] startlistening");
         processMessagePipe(messagePipe);
+        processMessagePipe(unidentifiedMessagePipe);
+        WAVELOG.log(Level.INFO, "[WM] done startListening");
+    }
+    
+    public void reset() {
+        WAVELOG.log(Level.INFO, "RESET called!");
+        if (!connected) {
+            WAVELOG.log(Level.INFO, "we weren't connected");
+            return;
+        }
+        this.sender.cancelInFlightRequests();
+        this.messagePipe.shutdown();
+        this.unidentifiedMessagePipe.shutdown();
+        this.connected = false;
+        WAVELOG.log(Level.INFO, "RESET done");
     }
 
     public void syncEverything() throws IOException {
+        WAVELOG.log(Level.INFO, "[WM] startSyncEverything");
         syncConfiguration();
         syncContacts();
         syncGroups();
+        WAVELOG.log(Level.INFO, "[WM] doneSyncEverything");
     }
 
     /**
@@ -244,21 +282,40 @@ public class WaveManager {
      */
     public void syncContacts() throws IOException{
         ensureConnected();
+        syncContactsLatch = new CountDownLatch(1);
         SignalServiceProtos.SyncMessage.Request request = SignalServiceProtos.SyncMessage.Request.newBuilder()
                 .setType(SignalServiceProtos.SyncMessage.Request.Type.CONTACTS).build();
         RequestMessage requestMessage = new RequestMessage(request);
         SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
         sendSyncMessage(message);
+        // not used yet
+        Thread t = new Thread() {
+            @Override public void run() {
+                try {
+                    boolean res = syncContactsLatch.await(10, TimeUnit.SECONDS);
+                    if (res) {
+                        WAVELOG.log(Level.INFO, "Ok, we got contacts");
+                    } else {
+                        reset();
+                        
+                    }
+                } catch (InterruptedException ex) {
+                    ex.printStackTrace();
+                }
+            }
+        };
     }
 
     public void syncConfiguration() throws IOException {
         WAVELOG.log(Level.INFO, "We will request to sync the configuration");
         ensureConnected();
+        System.err.println("We ensured we are connected");
         SyncMessage.Request request = SyncMessage.Request.newBuilder()
                 .setType(SyncMessage.Request.Type.CONFIGURATION).build();
         RequestMessage requestMessage = new RequestMessage(request);
         SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
         sendSyncMessage(message);
+        System.err.println("We sent syncconfig request");
     }
 
     public void syncGroups() throws IOException {
@@ -401,6 +458,7 @@ public class WaveManager {
      * @throws IOException in case we can not connect.
      */
     private SignalServiceMessageReceiver createMessageReceiver() throws IOException {
+        WAVELOG.log(Level.INFO, "[WM] createMessageReceiver on "+Thread.currentThread());
         // ensure configuration and provider are ok
         if (signalServiceConfiguration == null) {
             throw new IllegalArgumentException("no signalserviceconfiguration");
@@ -409,7 +467,10 @@ public class WaveManager {
             throw new IllegalArgumentException("no credentialsProvider");
         }
         cl = new ClientConnectivityListener();
-        SleepTimer sleepTimer = m -> Thread.sleep(m);
+        SleepTimer sleepTimer = m -> {
+            WAVELOG.log(Level.DEBUG, "SLEEPTIMER needs to sleep "+m);
+            Thread.sleep(m);
+        };
         SignalServiceMessageReceiver answer = new SignalServiceMessageReceiver(
                 signalServiceConfiguration,
                 credentialsProvider,
@@ -439,7 +500,7 @@ public class WaveManager {
         };
         messagePipe = receiver.createMessagePipe(c);
         WAVELOG.log(Level.DEBUG, "[WM] create pipe");
-        SignalServiceMessagePipe unidentifiedMessagePipe = receiver.createUnidentifiedMessagePipe(c);
+        unidentifiedMessagePipe = receiver.createUnidentifiedMessagePipe(c);
         WAVELOG.log(Level.DEBUG, "[WM] created unidentifiedpipe");
         ExecutorService executorService = new ScheduledThreadPoolExecutor(5);
         SignalServiceMessageSender sender = new SignalServiceMessageSender(
@@ -469,6 +530,7 @@ public class WaveManager {
     
     // single-threaded processing for now
     void processMessagePipe(SignalServiceMessagePipe pipe) {
+        WAVELOG.log(Level.INFO, "[WM] processMessagePipe "+pipe);
         Thread t = new Thread() {
             @Override
             public void run() {
@@ -593,7 +655,7 @@ public class WaveManager {
     }
 
     void processSyncMessage(SignalServiceAddress sender, SignalServiceSyncMessage sssm) throws InvalidMessageException, IOException {
-        WAVELOG.log(Level.INFO, "Process SyncMessage: "+sssm);
+        WAVELOG.log(Level.INFO, "Process INCOMING SyncMessage: "+sssm);
         if (sssm.getContacts().isPresent()) {
             ContactsMessage msg = sssm.getContacts().get();
             processContactsMessage(msg);
