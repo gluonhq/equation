@@ -95,7 +95,7 @@ public class ProvisioningManager {
         try {
             while (listen) {
                 WAVELOG.log(Level.INFO,"[PM] waiting for reqest... ");
-                WebSocketRequestMessage request = provisioningWebSocket.readRequest(60000);
+                WebSocketRequestMessage request = provisioningWebSocket.readRequest(600000);
                 WAVELOG.log(Level.INFO,"[PM] got readrequest that I will handle now: " + request);
                 handleRequest(request);
                 WAVELOG.log(Level.INFO,"[PM] handled readrequest "+request);
