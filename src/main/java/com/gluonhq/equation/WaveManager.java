@@ -35,6 +35,10 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import javafx.beans.InvalidationListener;
+import javafx.beans.Observable;
+import javafx.beans.property.LongProperty;
+import javafx.beans.property.SimpleLongProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
@@ -111,6 +115,11 @@ public class WaveManager {
     
     private CountDownLatch syncContactsLatch;
     
+    private LongProperty lastSyncContactRequest = new SimpleLongProperty();
+    private LongProperty lastSyncContactResponse = new SimpleLongProperty();
+    
+    private final String CONTACT_SYNC_ERROR = "CONTACT_SYNC_ERROR";
+
     static {
         Security.addProvider(new BouncyCastleProvider());
         Security.setProperty("crypto.policy", "unlimited");
@@ -288,6 +297,7 @@ public class WaveManager {
         RequestMessage requestMessage = new RequestMessage(request);
         SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
         sendSyncMessage(message);
+        this.lastSyncContactRequest.set(System.currentTimeMillis());
         // not used yet
         Thread t = new Thread() {
             @Override public void run() {
@@ -391,6 +401,8 @@ public class WaveManager {
      * have to deal with callbacks from the provisioning system.
      */
     public void startProvisioning(ProvisioningClient provisioningClient) {
+        // There might be issues with provisioning where the contact list is not synced.
+        monitorSyncRequests(provisioningClient);
         provisioningManager = new ProvisioningManager(this, provisioningClient);
         provisioningManager.start();
     }
@@ -428,8 +440,45 @@ public class WaveManager {
         TrustStore ts = this.signalServiceConfiguration.getSignalServiceUrls()[0].getTrustStore();
         return this.signalServiceConfiguration;
     }
-    
+
+    public LongProperty lastSyncContactsRequest() {
+        return this.lastSyncContactRequest;
+    }
+
+    public LongProperty lastSyncContactsResponse() {
+        return this.lastSyncContactResponse;
+    }
+
     // PRIVATE 
+    private void monitorSyncRequests(ProvisioningClient provisioningClient) {
+        System.err.println("MONITOR SYNC");
+        this.lastSyncContactRequest.addListener(new InvalidationListener() {
+            @Override
+            public void invalidated(Observable arg0) {
+                long last = lastSyncContactRequest.get();
+                System.err.println("SYNCcontactRequest monitored");
+                Thread t = new Thread() {
+                    @Override public void run() {
+                        try {
+                            long timeout = Long.parseLong(System.getProperty("com.gluonhq.wave.provisioningTimeout", "30000"));
+                            System.err.println("We now allow for "+timeout+"ms to get contacts");
+                            Thread.sleep(timeout);
+                            if (lastSyncContactResponse.get() < last ) {
+                                System.err.println("PROBLEM! no Syncresponse after "+timeout+"ms");
+                                provisioningClient.gotProvisioningError(CONTACT_SYNC_ERROR);
+                            } else {
+                                System.err.println("ALRIGHT! Syncresponse within 30s");
+                            }
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    }
+                };
+                t.start();
+            }
+        });
+    }
+
     private  SignalServiceConfiguration createConfiguration() {
         WAVELOG.log(Level.DEBUG, "create SignalServiceConfiguration, truststore = "+trustStore);
         SignalServiceUrl[] urls = {
@@ -738,6 +787,7 @@ public class WaveManager {
     }
 
     private void processContactsMessage(ContactsMessage msg) throws IOException {
+        this.lastSyncContactResponse.set(System.currentTimeMillis());
         SignalServiceAttachment att = msg.getContactsStream();
         SignalServiceAttachmentPointer pointer = att.asPointer();
         Path output = Files.createTempFile("pre", "post");

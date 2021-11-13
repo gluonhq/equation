@@ -24,5 +24,12 @@ public interface ProvisioningClient {
      * @param number the number that we are binding to.
      */
     public void gotProvisionMessage(String number);
+    
+    /**
+     * In case an error occurs during provisioning, we will be notified about it.
+     * @param msg 
+     */
+    public default void gotProvisioningError(String msg) {
+    }
 
 }
