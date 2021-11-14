@@ -35,6 +35,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 import javafx.beans.InvalidationListener;
 import javafx.beans.Observable;
 import javafx.beans.property.LongProperty;
@@ -382,7 +383,6 @@ public class WaveManager {
     public long sendMessage(String uuid, String text) throws IOException {
         ensureConnected();
         Contact target = contacts.stream().filter(c -> uuid.equals(c.getUuid())).findFirst().get();
-
         Optional<SignalServiceAddress> add = SignalServiceAddress.fromRaw(uuid, target.getNr());
         SignalServiceDataMessage message = SignalServiceDataMessage.newBuilder()
                 .withBody(text).build();
@@ -393,7 +393,26 @@ public class WaveManager {
         }
         return message.getTimestamp();
     }
-        
+
+    public void sendReadReceipt(long timestamp, String uuid) {
+        WAVELOG.log(Level.DEBUG, "Need to send read receipt to "+uuid+" for "+timestamp);
+        Optional<Contact> target = getContactByUuid(uuid);
+        if (target.isEmpty()) {
+            WAVELOG.log(Level.WARNING, "Need to send a read receipt to " + uuid + " but this is not in contact list");
+            Thread.dumpStack();
+            return;
+        }
+        Optional<SignalServiceAddress> add = SignalServiceAddress.fromRaw(uuid, target.get().getNr());
+        SignalServiceReceiptMessage message = new SignalServiceReceiptMessage(SignalServiceReceiptMessage.Type.READ,
+                List.of(timestamp), System.currentTimeMillis());
+        try {
+           sender.sendReceipt(add.get(), Optional.empty(), message);
+        } catch (IOException | UntrustedIdentityException ex) {
+            WAVELOG.log(Level.WARNING, "Error sending a receipt to " + uuid);
+            ex.printStackTrace();
+        }
+    }
+
     /**
      * Start the provisioning flow. 
      * This should only be invoked once per device that needs to be paired.
