@@ -10,10 +10,12 @@ import com.gluonhq.equation.internal.TrustStoreImpl;
 import com.gluonhq.equation.log.WaveLogger;
 import com.gluonhq.equation.message.MessagingClient;
 import com.gluonhq.equation.model.Contact;
+import com.gluonhq.equation.model.Message;
 import com.gluonhq.equation.provision.ProvisioningClient;
 import com.gluonhq.equation.provision.ProvisioningManager;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.System.Logger.Level;
@@ -381,10 +383,20 @@ public class WaveManager {
      * @throws IOException 
      */
     public long sendMessage(String uuid, String text) throws IOException {
+        return sendMessage(uuid, text, List.of());
+    }
+
+    public long sendMessage(String uuid, String text, List<Path> attachment) throws IOException {
         ensureConnected();
+        List<SignalServiceAttachment> ssa = new LinkedList<>();
+        for (Path path : attachment) {
+            SignalServiceAttachmentPointer ptr = uploadAttachment(path);
+            ssa.add(ptr);
+        }
         Contact target = contacts.stream().filter(c -> uuid.equals(c.getUuid())).findFirst().get();
         Optional<SignalServiceAddress> add = SignalServiceAddress.fromRaw(uuid, target.getNr());
         SignalServiceDataMessage message = SignalServiceDataMessage.newBuilder()
+                .withAttachments(ssa)
                 .withBody(text).build();
         try {
             SendMessageResult res = sender.sendMessage(add.get(), Optional.empty(), message);
@@ -392,6 +404,18 @@ public class WaveManager {
             throw new IOException ("Could not send message! ", ex);
         }
         return message.getTimestamp();
+    }
+
+    public SignalServiceAttachmentPointer uploadAttachment(Path p) throws IOException {
+        InputStream inputStream = Files.newInputStream(p);
+        int av = inputStream.available();
+        SignalServiceAttachment.Builder builder = SignalServiceAttachment.newStreamBuilder().withStream(inputStream)
+                .withContentType("image/*")
+                .withLength(av)
+                .withUploadTimestamp(System.currentTimeMillis());
+        SignalServiceAttachmentStream stream = builder.build();
+        SignalServiceAttachmentPointer ptr = sender.uploadAttachment(stream);
+        return ptr;
     }
 
     public void sendReadReceipt(long timestamp, String uuid) {
@@ -752,11 +776,52 @@ public class WaveManager {
 
     void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm) {
         WAVELOG.log(Level.INFO, "Process datamessage");
+        Message msg = new Message();
+        Optional<List<SignalServiceAttachment>> attachmentsOpt = ssdm.getAttachments();
+        if (attachmentsOpt.isPresent()) {
+            List<SignalServiceAttachment> attList = attachmentsOpt.get();
+            for (SignalServiceAttachment ssa : attList) {
+                if (ssa.isStream()) {
+                    SignalServiceAttachmentStream stream = ssa.asStream();
+                    InputStream is = stream.getInputStream();
+                    try {
+                        int len = is.available();
+                        byte[] b = new byte[len];
+                        is.read(b);
+                        Path tf = Files.createTempFile("att", "");
+                        Files.write(tf, b);
+                    } catch (IOException ex) {
+                        Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+                    }
+                } else if (ssa.isPointer()) {
+                    try {
+                        SignalServiceAttachmentPointer pointer = ssa.asPointer();
+                        Path output = Files.createTempFile("att", "");
+                        InputStream is = receiver.retrieveAttachment(pointer, output.toFile(), Integer.MAX_VALUE);
+                        Path tf2 = Files.createTempFile("a2t", "");
+                        FileOutputStream fos = new FileOutputStream(tf2.toFile());
+                        byte[] b = new byte[4096];
+                        int len = is.read(b);
+                        while (len > 0) {
+                            fos.write(b, 0, len);
+                            len = is.read(b);
+                        }
+                        fos.close();
+                        msg.attachment(tf2);
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+
+                }
+            }
+        }
+        ssdm.getGroupContext();
         if (this.messageListener != null) {
             String uuid = sender.getUuid().get().toString();
             String content = ssdm.getBody().orElse(null);
             if (content != null) {
-                this.messageListener.gotMessage(uuid, content, ssdm.getTimestamp());
+                msg.senderUuid(uuid).content(content).timestamp(ssdm.getTimestamp());
+                this.messageListener.gotMessage(msg);
             }
         }
     }

@@ -5,6 +5,7 @@
  */
 package com.gluonhq.equation.message;
 
+import com.gluonhq.equation.model.Message;
 import java.util.List;
 
 /**
@@ -33,6 +34,13 @@ public interface MessagingClient {
      */
 
     void gotMessage(String senderUuid, String content, long timestamp, String receiverUuid);
+
+    /**
+     * Called when a message is available
+     * @param msg the incoming message. This can be either for the current user,
+     * or it can be a sync message from this user, to a different receiver.
+     */
+    default void gotMessage(Message msg) {}
 
     /**
      * Called when a sender is starting to type or stopping to type
