@@ -10,6 +10,7 @@ import com.gluonhq.equation.internal.TrustStoreImpl;
 import com.gluonhq.equation.log.WaveLogger;
 import com.gluonhq.equation.message.MessagingClient;
 import com.gluonhq.equation.model.Contact;
+import com.gluonhq.equation.model.Group;
 import com.gluonhq.equation.model.Message;
 import com.gluonhq.equation.provision.ProvisioningClient;
 import com.gluonhq.equation.provision.ProvisioningManager;
@@ -24,6 +25,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.Security;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -51,6 +53,7 @@ import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
+import org.signal.zkgroup.groups.GroupMasterKey;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
 import org.whispersystems.libsignal.ecc.Curve;
@@ -68,11 +71,14 @@ import org.whispersystems.signalservice.api.messages.SignalServiceAttachmentStre
 import org.whispersystems.signalservice.api.messages.SignalServiceContent;
 import org.whispersystems.signalservice.api.messages.SignalServiceDataMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceEnvelope;
+import org.whispersystems.signalservice.api.messages.SignalServiceGroupContext;
 import org.whispersystems.signalservice.api.messages.SignalServiceReceiptMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceTypingMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.ContactsMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.DeviceContact;
 import org.whispersystems.signalservice.api.messages.multidevice.DeviceContactsInputStream;
+import org.whispersystems.signalservice.api.messages.multidevice.DeviceGroup;
+import org.whispersystems.signalservice.api.messages.multidevice.DeviceGroupsInputStream;
 import org.whispersystems.signalservice.api.messages.multidevice.RequestMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SentTranscriptMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SignalServiceSyncMessage;
@@ -111,6 +117,7 @@ public class WaveManager {
     final TrustStore trustStore = new TrustStoreImpl();
     private final LockImpl lock;
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
+    private final ObservableList<Group> groups = FXCollections.observableArrayList();
 
     final SignalServiceConfiguration signalServiceConfiguration;
 
@@ -747,19 +754,25 @@ public class WaveManager {
     }
 
     void processSyncMessage(SignalServiceAddress sender, SignalServiceSyncMessage sssm) throws InvalidMessageException, IOException {
-        WAVELOG.log(Level.INFO, "Process INCOMING SyncMessage: "+sssm);
+        WAVELOG.log(Level.INFO, "Processing INCOMING SyncMessage: "+sssm);
         if (sssm.getContacts().isPresent()) {
+            System.err.println("INSYNC Contacts!");
             ContactsMessage msg = sssm.getContacts().get();
             processContactsMessage(msg);
         }
         if (sssm.getSent().isPresent()) {
+            System.err.println("INSYNC sent!");
             SentTranscriptMessage msg = sssm.getSent().get();
             processSentTranscriptMessage(sender, msg);
         }
         if (sssm.getGroups().isPresent()) {
+            System.err.println("INSYNC groups!");
             WAVELOG.log(Level.DEBUG, "WaveManager has groupssyncmessage!");
             SignalServiceAttachment get = sssm.getGroups().get();
+            processGroupsMessage(get);
         }
+         WAVELOG.log(Level.INFO, "Processed INCOMING SyncMessage: "+sssm);
+
     }
     
     void processTypingMessage(SignalServiceAddress sender, SignalServiceTypingMessage sstm) throws InvalidMessageException, IOException {
@@ -815,7 +828,12 @@ public class WaveManager {
                 }
             }
         }
-        ssdm.getGroupContext();
+        Optional<SignalServiceGroupContext> groupContext = ssdm.getGroupContext();
+        if (groupContext.isPresent()) {
+            SignalServiceGroupContext groupCon = groupContext.get();
+            GroupMasterKey masterKey = groupCon.getGroupV2().get().getMasterKey();
+            System.err.println("GROUPMESSAGE for masterKey "+masterKey);
+        }
         if (this.messageListener != null) {
             String uuid = sender.getUuid().get().toString();
             String content = ssdm.getBody().orElse(null);
@@ -958,6 +976,50 @@ public class WaveManager {
         contactStorageDirty = true;
     }
 
+    private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
+        System.err.println("Processing groupsMessage");
+        SignalServiceAttachmentPointer pointer = ssa.asPointer();
+         Path output = Files.createTempFile("pre", "post");
+
+        try {
+            receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            throw new IOException("Can't retrieve attachment", ex);
+        }
+
+        try {
+            InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
+            int av = ais.available();
+            byte[] buff = new byte[av];
+            int r = ais.read(buff);
+            System.err.println("I did read "+r+" bytes");
+            System.err.println("bytes = "+Arrays.toString(buff));
+            Path attPath = Files.createTempFile("groupatt", "bin");
+            File attFile = attPath.toFile();
+            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
+//            InputStream ois = new FileInputStream(attFile);
+            InputStream ois = new FileInputStream(output.toFile());
+            DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
+            DeviceGroup dg = is.read();
+            groups.clear();
+            while (dg != null) {
+                try {
+                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
+                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and id "+Arrays.asList(g.getId()));
+                groups.add(g);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                dg = is.read();
+            }
+            
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        
+    }
     class ClientConnectivityListener implements ConnectivityListener {
 
         private final CountDownLatch connectedLatch = new CountDownLatch(1);
