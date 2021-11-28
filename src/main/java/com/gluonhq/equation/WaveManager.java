@@ -5,6 +5,7 @@
  */
 package com.gluonhq.equation;
 
+import com.gluonhq.equation.internal.KeyUtil;
 import com.gluonhq.equation.internal.LockImpl;
 import com.gluonhq.equation.internal.TrustStoreImpl;
 import com.gluonhq.equation.log.WaveLogger;
@@ -54,10 +55,13 @@ import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
 import org.signal.zkgroup.groups.GroupMasterKey;
+import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
 import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
+import org.whispersystems.libsignal.state.PreKeyRecord;
+import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.SignalServiceMessagePipe;
 import org.whispersystems.signalservice.api.SignalServiceMessageReceiver;
 import org.whispersystems.signalservice.api.SignalServiceMessageSender;
@@ -95,6 +99,8 @@ import org.whispersystems.signalservice.internal.configuration.SignalServiceUrl;
 import org.whispersystems.signalservice.internal.configuration.SignalStorageUrl;
 import org.whispersystems.signalservice.internal.push.SignalServiceProtos;
 import org.whispersystems.signalservice.internal.push.SignalServiceProtos.SyncMessage;
+import org.whispersystems.signalservice.internal.util.StaticCredentialsProvider;
+import org.whispersystems.signalservice.internal.websocket.WebSocketProtos.WebSocketRequestMessage;
 import org.whispersystems.util.Base64;
 
 /**
@@ -113,6 +119,7 @@ public class WaveManager {
     static final String SIGNAL_KEY_BACKUP_URL = "https://api.backup.signal.org";
     static final String SIGNAL_STORAGE_URL = "https://storage.signal.org";
     static final String UNIDENTIFIED_SENDER_TRUST_ROOT = "BXu6QIKVz5MA8gstzfOgRQGqyLqOwNKHL6INkv3IHWMF";
+    static final String ZKGROUP_SERVER_PUBLIC_PARAMS = "AMhf5ywVwITZMsff/eCyudZx9JDmkkkbV6PInzG4p8x3VqVJSFiMvnvlEKWuRob/1eaIetR31IYeAbm0NdOuHH8Qi+Rexi1wLlpzIo1gstHWBfZzy1+qHRV5A4TqPp15YzBPm0WSggW6PbSn+F4lf57VCnHF7p8SvzAA2ZZJPYJURt8X7bbg+H3i+PEjH9DXItNEqs2sNcug37xZQDLm7X36nOoGPs54XsEGzPdEV+itQNGUFEjY6X9Uv+Acuks7NpyGvCoKxGwgKgE5XyJ+nNKlyHHOLb6N1NuHyBrZrgtY";
     long MAX_FILE_STORAGE = 1024 * 1024 * 4;
     final TrustStore trustStore = new TrustStoreImpl();
     private final LockImpl lock;
@@ -157,6 +164,7 @@ public class WaveManager {
     private boolean contactStorageDirty = true;
     private ProvisioningManager provisioningManager;
     public static WaveLogger WAVELOG;
+    private AccountManager accountManager;
 
     private WaveManager() {
         WAVELOG = new WaveLogger();
@@ -342,7 +350,8 @@ public class WaveManager {
         WAVELOG.log(Level.INFO, "We will request to sync groups");
         ensureConnected();
         SignalServiceProtos.SyncMessage.Request request = SignalServiceProtos.SyncMessage.Request.newBuilder()
-                .setType(SignalServiceProtos.SyncMessage.Request.Type.GROUPS).build();
+                .setType(SignalServiceProtos.SyncMessage.Request.Type.GROUPS)
+                .build();
         RequestMessage requestMessage = new RequestMessage(request);
         SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
         sendSyncMessage(message);
@@ -456,7 +465,7 @@ public class WaveManager {
         provisioningManager = new ProvisioningManager(this, provisioningClient);
         provisioningManager.start();
     }
-    
+
     /**
      * Creates a local account linked to the provided number. 
      * The work is delegated to the ProvisioningManager which will also
@@ -472,8 +481,11 @@ public class WaveManager {
         this.credentialsProvider = waveStore.getCredentialsProvider();
         this.signalServiceAddress = new SignalServiceAddress(credentialsProvider.getUuid(), credentialsProvider.getE164());
         provisioningManager.stop();
+        this.accountManager = new AccountManager(getSignalServiceConfiguration(), credentialsProvider);
+        waveStore.setCredentialsProvider((StaticCredentialsProvider) this.credentialsProvider);
+        generateAndRegisterKeys();
     }
-    
+
     /**
      * Retrieves the store which is the master for all our data
      * @return the WaveStore (which implements SignalProtocolStore)
@@ -500,6 +512,19 @@ public class WaveManager {
     }
 
     // PRIVATE 
+    
+    private void generateAndRegisterKeys() throws IOException {
+        IdentityKeyPair identityKeypair = getWaveStore().getIdentityKeyPair();
+        SignedPreKeyRecord signedPreKey = KeyUtil.generateSignedPreKey(identityKeypair, true);
+        waveStore.storeSignedPreKey(2, signedPreKey);
+  
+        List<PreKeyRecord> records = KeyUtil.generatePreKeys(100);
+        WAVELOG.log(Level.DEBUG," PM will register keys, ik = "+ identityKeypair+" with pubkey = "+identityKeypair.getPublicKey()+" and spk = "+signedPreKey+" and records = "+records);
+        String response = accountManager.setPreKeys(identityKeypair.getPublicKey(), signedPreKey, records);
+        WAVELOG.log(Level.DEBUG,"Response for generateAndRegisterKeys = "+response);
+    }
+
+    
     private void monitorSyncRequests(ProvisioningClient provisioningClient) {
         System.err.println("MONITOR SYNC");
         this.lastSyncContactRequest.addListener(new InvalidationListener() {
@@ -541,12 +566,17 @@ public class WaveManager {
 
         SignalStorageUrl[] storageUrl = new SignalStorageUrl[]{
             new SignalStorageUrl(SIGNAL_STORAGE_URL, trustStore)};
+        byte[] zkGroupServerPublicParams = new byte[0];
+        try {
+            zkGroupServerPublicParams = Base64.decode(ZKGROUP_SERVER_PUBLIC_PARAMS);
+        } catch (IOException ex) {
+            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
         SignalServiceConfiguration answer = new SignalServiceConfiguration(
                 urls, cdnMap,
                 new SignalContactDiscoveryUrl[]{new SignalContactDiscoveryUrl("https://api.directory.signal.org", trustStore)},
                 backup, storageUrl, new LinkedList(),
-                Optional.empty(), Optional.empty(), null
-        );
+                Optional.empty(), Optional.empty(), zkGroupServerPublicParams);
 
         return answer;
     }
@@ -896,12 +926,7 @@ public class WaveManager {
 
         try {
             receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            throw new IOException("Can't retrieve attachment", ex);
-        }
 
-        try {
             InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
             Path attPath = Files.createTempFile("att", "bin");
             File attFile = attPath.toFile();
@@ -977,29 +1002,44 @@ public class WaveManager {
     }
 
     private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
-        System.err.println("Processing groupsMessage");
+        System.err.println("Processing groupsMessage, pointer? "+ssa.isPointer()
+        +", stream? "+ssa.isStream());
         SignalServiceAttachmentPointer pointer = ssa.asPointer();
-         Path output = Files.createTempFile("pre", "post");
+        Path output = Files.createTempFile("pre", "post");
+            Path mattPath = Files.createTempFile("r", "bin");
 
         try {
-            receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
+            InputStream is = receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
+            File attFile = mattPath.toFile();
+            Files.copy(is, mattPath, StandardCopyOption.REPLACE_EXISTING);
         } catch (Exception ex) {
             ex.printStackTrace();
             throw new IOException("Can't retrieve attachment", ex);
         }
-
+        System.err.println("MATTPATH = "+mattPath+", OUT = "+output);
         try {
+            byte[] digest = pointer.getDigest().get();
             InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
-            int av = ais.available();
-            byte[] buff = new byte[av];
-            int r = ais.read(buff);
-            System.err.println("I did read "+r+" bytes");
-            System.err.println("bytes = "+Arrays.toString(buff));
-            Path attPath = Files.createTempFile("groupatt", "bin");
+                      
+            Path attPath = Files.createTempFile("agg", "bin");
             File attFile = attPath.toFile();
             Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
-//            InputStream ois = new FileInputStream(attFile);
-            InputStream ois = new FileInputStream(output.toFile());
+
+            InputStream ois = new FileInputStream(attFile);
+            
+            
+            
+//            int av = ais.available();
+//            byte[] buff = new byte[av];
+//            int r = ais.read(buff);
+//            System.err.println("I did read "+r+" bytes, av = "+av);
+//            System.err.println("bytes = "+Arrays.toString(buff));
+//            Path attPath = Files.createTempFile("groupatt", "bin");
+//            File attFile = attPath.toFile();
+//            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
+////            InputStream ois = new FileInputStream(attFile);
+//            InputStream ois = new FileInputStream(output.toFile());
+            
             DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
             DeviceGroup dg = is.read();
             groups.clear();
