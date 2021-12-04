@@ -224,10 +224,14 @@ public class ProvisioningManager {
 //                    .addAllHeaders(headers).build();
 //            WebsocketResponse webresponse = accountWebSocket.sendRequest(requestMessage).get(20, TimeUnit.SECONDS);
 //            String response = webresponse.getBody();
+System.err.println("REG, sending body = "+body);
              String response = accountSocket.makeServiceRequest("/v1/devices/" + code, "PUT", body, myHeaders);
-            int c = response.indexOf(":");
+            System.err.println("response = "+response);
+            int devidx = response.indexOf("deviceId");
+             int c = response.indexOf(":", devidx);
             String did = response.substring(c + 1, response.length() - 1);
             this.deviceId = Integer.parseInt(did);
+            System.err.println("REGRES, res = "+response+", did = "+deviceId);
             waveManager.getWaveStore().setRegistrationId(deviceId);
         } catch (Exception e) {
             System.err.println("confirmcode Got error: " + e.getMessage());

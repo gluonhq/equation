@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.Security;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -36,6 +37,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -54,7 +56,9 @@ import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
+import org.signal.zkgroup.auth.AuthCredentialResponse;
 import org.signal.zkgroup.groups.GroupMasterKey;
+import org.signal.zkgroup.profiles.ProfileKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
@@ -62,9 +66,7 @@ import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
 import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
-import org.whispersystems.signalservice.api.SignalServiceMessagePipe;
-import org.whispersystems.signalservice.api.SignalServiceMessageReceiver;
-import org.whispersystems.signalservice.api.SignalServiceMessageSender;
+import org.whispersystems.signalservice.api.*;
 import org.whispersystems.signalservice.api.crypto.AttachmentCipherInputStream;
 import org.whispersystems.signalservice.api.crypto.SignalServiceCipher;
 import org.whispersystems.signalservice.api.crypto.UntrustedIdentityException;
@@ -83,11 +85,15 @@ import org.whispersystems.signalservice.api.messages.multidevice.DeviceContact;
 import org.whispersystems.signalservice.api.messages.multidevice.DeviceContactsInputStream;
 import org.whispersystems.signalservice.api.messages.multidevice.DeviceGroup;
 import org.whispersystems.signalservice.api.messages.multidevice.DeviceGroupsInputStream;
+import org.whispersystems.signalservice.api.messages.multidevice.KeysMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.RequestMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SentTranscriptMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SignalServiceSyncMessage;
+import org.whispersystems.signalservice.api.profiles.SignalServiceProfile;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.api.push.TrustStore;
+import org.whispersystems.signalservice.api.storage.SignalStorageManifest;
+import org.whispersystems.signalservice.api.storage.StorageKey;
 import org.whispersystems.signalservice.api.util.CredentialsProvider;
 import org.whispersystems.signalservice.api.util.SleepTimer;
 import org.whispersystems.signalservice.api.websocket.ConnectivityListener;
@@ -136,6 +142,8 @@ public class WaveManager {
     private LongProperty lastSyncContactResponse = new SimpleLongProperty();
     
     private final String CONTACT_SYNC_ERROR = "CONTACT_SYNC_ERROR";
+    
+    private boolean firstRun = false;
 
     static {
         Security.addProvider(new BouncyCastleProvider());
@@ -257,17 +265,29 @@ public class WaveManager {
     }
 
     public void initialize() {
-            try {
-                getWaveLogger().log(Level.DEBUG, "ensure we are connected");
-                this.ensureConnected();
-                getWaveLogger().log(Level.DEBUG, "we are connected, let's sync");
-                syncEverything();
-                getWaveLogger().log(Level.DEBUG, "sync requests are sent");
-                startListening();
-            } catch (IOException ex) {
-                ex.printStackTrace();
-                System.err.println("We're offline. Not much we can do now!");
+        System.err.println(Thread.currentThread() + " WAVEMANAGER initialize will now be called. FirstRUn? " + firstRun);
+        if (this.accountManager == null) {
+            this.accountManager = new AccountManager(getSignalServiceConfiguration(), credentialsProvider);
+        }
+        try {
+            getWaveLogger().log(Level.DEBUG, "ensure we are connected");
+            this.ensureConnected();
+            accountManager.getRemoteConfig();
+            syncKeys();
+            if (firstRun) {
+                System.err.println("FIRSTRUN, get group certificate");
+                long days = LocalDate.now().toEpochDay();
+                HashMap<Integer, AuthCredentialResponse> credentials = this.accountManager.getGroupsV2Api().getCredentials((int) days);
+                System.err.println("Credentials = "+credentials);
             }
+            getWaveLogger().log(Level.DEBUG, "we are connected, let's sync");
+            syncEverything();
+            getWaveLogger().log(Level.DEBUG, "sync requests are sent");
+            startListening();
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            System.err.println("We're offline. Not much we can do now!");
+        }
     }
     /**
      * Starts listening for incoming messages. At this point, we need to be connected.
@@ -294,14 +314,23 @@ public class WaveManager {
 
     public void syncEverything() throws IOException {
         WAVELOG.log(Level.INFO, "[WM] startSyncEverything");
-        syncConfiguration();
+       // syncConfiguration();
         syncContacts();
-        syncGroups();
+     //  syncGroups();
         WAVELOG.log(Level.INFO, "[WM] doneSyncEverything");
+    }
+    
+    public void syncKeys() throws IOException {
+        SignalServiceProtos.SyncMessage.Request request = SignalServiceProtos.SyncMessage.Request.newBuilder()
+                .setType(SignalServiceProtos.SyncMessage.Request.Type.KEYS).build();
+                RequestMessage requestMessage = new RequestMessage(request);
+        SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
+        System.err.println("[WM] will sendSyncMessage for keys");
+        sendSyncMessage(message);
     }
 
     /**
-     * Send a request to synchronize contacts. We expect an incoming message with 
+     * Send a request to synchronize contacts. We expect an sincoming message with 
      * a contact list, but this methods returns immediately and does not deal
      * with the processing of the incoming message.
      * 
@@ -461,6 +490,7 @@ public class WaveManager {
      */
     public void startProvisioning(ProvisioningClient provisioningClient) {
         // There might be issues with provisioning where the contact list is not synced.
+        this.firstRun = true;
         monitorSyncRequests(provisioningClient);
         provisioningManager = new ProvisioningManager(this, provisioningClient);
         provisioningManager.start();
@@ -480,7 +510,7 @@ public class WaveManager {
         provisioningManager.createAccount(nr, deviceName);
         this.credentialsProvider = waveStore.getCredentialsProvider();
         this.signalServiceAddress = new SignalServiceAddress(credentialsProvider.getUuid(), credentialsProvider.getE164());
-        provisioningManager.stop();
+        provisioningManager.stop();      
         this.accountManager = new AccountManager(getSignalServiceConfiguration(), credentialsProvider);
         waveStore.setCredentialsProvider((StaticCredentialsProvider) this.credentialsProvider);
         generateAndRegisterKeys();
@@ -784,7 +814,7 @@ public class WaveManager {
     }
 
     void processSyncMessage(SignalServiceAddress sender, SignalServiceSyncMessage sssm) throws InvalidMessageException, IOException {
-        WAVELOG.log(Level.INFO, "Processing INCOMING SyncMessage: "+sssm);
+        WAVELOG.log(Level.INFO, "[WM]Processing INCOMING SyncMessage: "+sssm);
         if (sssm.getContacts().isPresent()) {
             System.err.println("INSYNC Contacts!");
             ContactsMessage msg = sssm.getContacts().get();
@@ -800,6 +830,11 @@ public class WaveManager {
             WAVELOG.log(Level.DEBUG, "WaveManager has groupssyncmessage!");
             SignalServiceAttachment get = sssm.getGroups().get();
             processGroupsMessage(get);
+        }
+        if (sssm.getKeys().isPresent()) {
+            System.err.println("INSYNC KEYS");
+            KeysMessage keysMessage = sssm.getKeys().get();
+            processKeysMessage(keysMessage);
         }
          WAVELOG.log(Level.INFO, "Processed INCOMING SyncMessage: "+sssm);
 
@@ -940,6 +975,16 @@ public class WaveManager {
                 Contact contact = new Contact(dc.getName().orElse("anonymous"),
                         dc.getAddress().getUuid().get().toString(),
                         dc.getAddress().getNumber().orElse("123"));
+                ProfileKey profileKey = dc.getProfileKey().orElse(null);
+                if (profileKey != null) {
+                    contact.setProfileKey(profileKey.serialize());
+                    UUID uuid = dc.getAddress().getUuid().get();
+                    Future<SignalServiceProfile> fut = accountManager.getSocket().retrieveVersionedProfile(uuid, profileKey, Optional.empty());
+                    SignalServiceProfile ssp = fut.get(10, TimeUnit.SECONDS);
+                    System.err.println("GOT PROFILE: "+ssp);
+                    System.err.println("profile = "+ssp.getName()+", "+ssp.getAbout()+", "+ssp.getAvatar());
+                }
+                
                 if (dc.getAvatar().isPresent()) {
                     SignalServiceAttachmentStream ssas = dc.getAvatar().get();
                     long length = ssas.getLength();
@@ -1057,9 +1102,26 @@ public class WaveManager {
         } catch (Exception e) {
             e.printStackTrace();
         }
-        
-        
+            
     }
+    
+    private void processKeysMessage(KeysMessage keysMessage) {
+        StorageKey storageKey = keysMessage.getStorageService().get();
+        System.err.println(Thread.currentThread()+" We got a storage key, use this thread to read manifest");
+        try {
+            Optional<SignalStorageManifest> storageManifest = accountManager.getStorageManifest(storageKey);
+            System.err.println("IDS = " + storageManifest.get().getStorageIds());
+            storageManifest.get().getStorageIds().forEach(si -> {
+                System.err.println("SI = "+si.hashCode()+" with type "+si.getType()+" and bl = "+si.getRaw().length+" and si = "
+                        +Arrays.toString(si.getRaw()));
+            }
+            );
+        } catch (IOException ex) {
+            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
+    }
+    
+    
     class ClientConnectivityListener implements ConnectivityListener {
 
         private final CountDownLatch connectedLatch = new CountDownLatch(1);

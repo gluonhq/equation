@@ -11,6 +11,7 @@ public class Contact {
     private final String uuid;
     private final String nr;
     private String avatarPath;
+    private byte[] profileKey;
 
     public Contact(String name, String uuid, String nr) {
         this.name = name;
@@ -34,6 +35,9 @@ public class Contact {
         return avatarPath;
     }
     
+    public void setProfileKey(byte[] b) {
+        this.profileKey = b;
+    }
     
     public void setAvatarPath(String b) {
         this.avatarPath = b;
