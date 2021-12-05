@@ -8,6 +8,7 @@ package com.gluonhq.equation.provision;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.gluonhq.equation.AccountManager;
 import com.gluonhq.equation.WaveManager;
 import com.gluonhq.equation.WaveStore;
 import com.gluonhq.equation.internal.DeviceMessages;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import okhttp3.Response;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.state.PreKeyRecord;
@@ -42,6 +44,7 @@ import org.whispersystems.signalservice.internal.util.StaticCredentialsProvider;
 import org.whispersystems.signalservice.internal.websocket.WebSocketConnection;
 import org.whispersystems.signalservice.internal.websocket.WebSocketProtos;
 import org.whispersystems.signalservice.internal.websocket.WebSocketProtos.WebSocketRequestMessage;
+import org.whispersystems.signalservice.internal.websocket.WebsocketResponse;
 
 /**
  * This class deals with the provisioning flow, required to pair a device
@@ -65,6 +68,8 @@ public class ProvisioningManager {
     private PushServiceSocket accountSocket;
     private StaticCredentialsProvider credentialsProvider;
     private WaveLogger WAVELOG;
+  //  private AccountManager accountManager;
+    private WebSocketConnection accountWebSocket;
 
     /**
      * Flow: when the start method is invoked, this class will generate a URL
@@ -90,7 +95,12 @@ public class ProvisioningManager {
         provisioningWebSocket = new WebSocketConnection(DESTINATION, "provisioning/", trustStore,
                 Optional.empty(), USER_AGENT, connectivityListener, sleepTimer,
                 new LinkedList(), Optional.empty(), Optional.empty(), null);
+        
+        accountWebSocket = new WebSocketConnection(DESTINATION, "", trustStore,
+                Optional.empty(), USER_AGENT, connectivityListener, sleepTimer,
+                new LinkedList(), Optional.empty(), Optional.empty(), null);
         provisioningWebSocket.connect();
+        accountWebSocket.connect();
         this.listen = true;
         try {
             while (listen) {
@@ -143,9 +153,7 @@ public class ProvisioningManager {
         UUID uuid = UUID.fromString(pm.getUuid());
         this.credentialsProvider = new StaticCredentialsProvider(uuid,
                 pm.getNumber(), password, "signalingkey", deviceId);
-        startAccountWebSocket();
         waveManager.getWaveStore().setCredentialsProvider(this.credentialsProvider);
-        generateAndRegisterKeys();
     }
 
     // PRIVATE
@@ -191,13 +199,6 @@ public class ProvisioningManager {
                 SIGNAL_USER_AGENT, null, true);
     }
 
-    private void startAccountWebSocket() {
-        this.accountSocket.cancelInFlightRequests();
-        SignalServiceConfiguration config = waveManager.getSignalServiceConfiguration();
-        this.accountSocket = new PushServiceSocket(config, credentialsProvider, 
-                SIGNAL_USER_AGENT, null, true);
-    }
-
     private void confirmCode(String number, String code, String pwd,
             int registrationId, String deviceName, String uuid) throws JsonProcessingException {
         WAVELOG.log(Level.INFO,"Confirming code");
@@ -211,10 +212,26 @@ public class ProvisioningManager {
             myHeaders.put("content-type", "application/json;charset=utf-8");
             myHeaders.put("User-Agent", "Signal-Desktop/5.14.0 Linux");
             myHeaders.put("x-signal-agent", "OWD");
-            String response = accountSocket.makeServiceRequest("/v1/devices/" + code, "PUT", body, myHeaders);
-            int c = response.indexOf(":");
+//            List<String> headers = new LinkedList<>();
+//            headers.add("Authorization:Basic brol" + basicAuth);
+//            headers.add("content-type:application/json;charset=utf-8");
+//            headers.add("User-Agent:Signal-Desktop/5.14.0 Linux");
+//            headers.add("x-signal-agent:OWD");
+//            WebSocketRequestMessage requestMessage = WebSocketRequestMessage.newBuilder()
+//                    .setPath("/v1/devices/+code")
+//                    .setVerb("PUT")
+//                    .setBody(ByteString.copyFrom(body, StandardCharsets.UTF_8))
+//                    .addAllHeaders(headers).build();
+//            WebsocketResponse webresponse = accountWebSocket.sendRequest(requestMessage).get(20, TimeUnit.SECONDS);
+//            String response = webresponse.getBody();
+System.err.println("REG, sending body = "+body);
+             String response = accountSocket.makeServiceRequest("/v1/devices/" + code, "PUT", body, myHeaders);
+            System.err.println("response = "+response);
+            int devidx = response.indexOf("deviceId");
+             int c = response.indexOf(":", devidx);
             String did = response.substring(c + 1, response.length() - 1);
             this.deviceId = Integer.parseInt(did);
+            System.err.println("REGRES, res = "+response+", did = "+deviceId);
             waveManager.getWaveStore().setRegistrationId(deviceId);
         } catch (Exception e) {
             System.err.println("confirmcode Got error: " + e.getMessage());
@@ -246,16 +263,16 @@ public class ProvisioningManager {
         return answer;
     }
 
-    private void generateAndRegisterKeys() throws IOException {
-        IdentityKeyPair identityKeypair = waveManager.getWaveStore().getIdentityKeyPair();
-        SignedPreKeyRecord signedPreKey = KeyUtil.generateSignedPreKey(identityKeypair, true);
-        store.storeSignedPreKey(2, signedPreKey);
-  
-        List<PreKeyRecord> records = KeyUtil.generatePreKeys(100);
-        WAVELOG.log(Level.DEBUG," PM will register keys, ik = "+ identityKeypair+" with pubkey = "+identityKeypair.getPublicKey()+" and spk = "+signedPreKey+" and records = "+records);
-        String response = accountSocket.registerPreKeys(identityKeypair.getPublicKey(), signedPreKey, records);
-        WAVELOG.log(Level.DEBUG,"Response for generateAndRegisterKeys = "+response);
-    }
+//    private void generateAndRegisterKeys() throws IOException {
+//        IdentityKeyPair identityKeypair = waveManager.getWaveStore().getIdentityKeyPair();
+//        SignedPreKeyRecord signedPreKey = KeyUtil.generateSignedPreKey(identityKeypair, true);
+//        store.storeSignedPreKey(2, signedPreKey);
+//  
+//        List<PreKeyRecord> records = KeyUtil.generatePreKeys(100);
+//        WAVELOG.log(Level.DEBUG," PM will register keys, ik = "+ identityKeypair+" with pubkey = "+identityKeypair.getPublicKey()+" and spk = "+signedPreKey+" and records = "+records);
+//        String response = accountManager.setPreKeys(identityKeypair.getPublicKey(), signedPreKey, records);
+//        WAVELOG.log(Level.DEBUG,"Response for generateAndRegisterKeys = "+response);
+//    }
 
     class ProvisioningConnectivityListener implements ConnectivityListener {
 
