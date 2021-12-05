@@ -56,8 +56,10 @@ import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
+import org.signal.zkgroup.VerificationFailedException;
 import org.signal.zkgroup.auth.AuthCredentialResponse;
 import org.signal.zkgroup.groups.GroupMasterKey;
+import org.signal.zkgroup.groups.GroupSecretParams;
 import org.signal.zkgroup.profiles.ProfileKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
@@ -70,6 +72,8 @@ import org.whispersystems.signalservice.api.*;
 import org.whispersystems.signalservice.api.crypto.AttachmentCipherInputStream;
 import org.whispersystems.signalservice.api.crypto.SignalServiceCipher;
 import org.whispersystems.signalservice.api.crypto.UntrustedIdentityException;
+import org.whispersystems.signalservice.api.groupsv2.GroupsV2AuthorizationString;
+import org.whispersystems.signalservice.api.groupsv2.InvalidGroupStateException;
 import org.whispersystems.signalservice.api.messages.SendMessageResult;
 import org.whispersystems.signalservice.api.messages.SignalServiceAttachment;
 import org.whispersystems.signalservice.api.messages.SignalServiceAttachmentPointer;
@@ -92,7 +96,9 @@ import org.whispersystems.signalservice.api.messages.multidevice.SignalServiceSy
 import org.whispersystems.signalservice.api.profiles.SignalServiceProfile;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.api.push.TrustStore;
+import org.whispersystems.signalservice.api.storage.SignalGroupV2Record;
 import org.whispersystems.signalservice.api.storage.SignalStorageManifest;
+import org.whispersystems.signalservice.api.storage.SignalStorageRecord;
 import org.whispersystems.signalservice.api.storage.StorageKey;
 import org.whispersystems.signalservice.api.util.CredentialsProvider;
 import org.whispersystems.signalservice.api.util.SleepTimer;
@@ -144,6 +150,7 @@ public class WaveManager {
     private final String CONTACT_SYNC_ERROR = "CONTACT_SYNC_ERROR";
     
     private boolean firstRun = false;
+    StorageKey storageKey = null;
 
     static {
         Security.addProvider(new BouncyCastleProvider());
@@ -173,6 +180,7 @@ public class WaveManager {
     private ProvisioningManager provisioningManager;
     public static WaveLogger WAVELOG;
     private AccountManager accountManager;
+    HashMap<Integer, AuthCredentialResponse> groupCredentials;
 
     private WaveManager() {
         WAVELOG = new WaveLogger();
@@ -273,13 +281,12 @@ public class WaveManager {
             getWaveLogger().log(Level.DEBUG, "ensure we are connected");
             this.ensureConnected();
             accountManager.getRemoteConfig();
-            syncKeys();
             if (firstRun) {
                 System.err.println("FIRSTRUN, get group certificate");
                 long days = LocalDate.now().toEpochDay();
-                HashMap<Integer, AuthCredentialResponse> credentials = this.accountManager.getGroupsV2Api().getCredentials((int) days);
-                System.err.println("Credentials = "+credentials);
+                groupCredentials = this.accountManager.getGroupsV2Api().getCredentials((int) days);
             }
+            syncKeys();
             getWaveLogger().log(Level.DEBUG, "we are connected, let's sync");
             syncEverything();
             getWaveLogger().log(Level.DEBUG, "sync requests are sent");
@@ -898,6 +905,8 @@ public class WaveManager {
             SignalServiceGroupContext groupCon = groupContext.get();
             GroupMasterKey masterKey = groupCon.getGroupV2().get().getMasterKey();
             System.err.println("GROUPMESSAGE for masterKey "+masterKey);
+            System.err.println("serial version of masterkey = "+
+                    Arrays.toString(masterKey.serialize()));
         }
         if (this.messageListener != null) {
             String uuid = sender.getUuid().get().toString();
@@ -971,6 +980,8 @@ public class WaveManager {
             DeviceContactsInputStream is = new DeviceContactsInputStream(ois);
             DeviceContact dc = is.read();
             contacts.clear();
+            int cnt = 0;
+            int pcnt = 0;
             while (dc != null) {
                 Contact contact = new Contact(dc.getName().orElse("anonymous"),
                         dc.getAddress().getUuid().get().toString(),
@@ -981,10 +992,11 @@ public class WaveManager {
                     UUID uuid = dc.getAddress().getUuid().get();
                     Future<SignalServiceProfile> fut = accountManager.getSocket().retrieveVersionedProfile(uuid, profileKey, Optional.empty());
                     SignalServiceProfile ssp = fut.get(10, TimeUnit.SECONDS);
-                    System.err.println("GOT PROFILE: "+ssp);
-                    System.err.println("profile = "+ssp.getName()+", "+ssp.getAbout()+", "+ssp.getAvatar());
+                    System.err.println("GOT PROFILE: "+ssp+" with key "+Arrays.toString(profileKey.serialize()));
+                    System.err.println("profile["+pcnt+ "]= "+ssp.getName()+", "+ssp.getAbout()+", "+ssp.getAvatar());
+                    pcnt++;
                 }
-                
+                System.err.println("contact[cnt] = "+contact.getName());
                 if (dc.getAvatar().isPresent()) {
                     SignalServiceAttachmentStream ssas = dc.getAvatar().get();
                     long length = ssas.getLength();
@@ -1104,24 +1116,53 @@ public class WaveManager {
         }
             
     }
-    
+
     private void processKeysMessage(KeysMessage keysMessage) {
-        StorageKey storageKey = keysMessage.getStorageService().get();
-        System.err.println(Thread.currentThread()+" We got a storage key, use this thread to read manifest");
+        this.storageKey = keysMessage.getStorageService().get();
+        syncStorage();
+    }
+
+    private void syncStorage() {
+        System.err.println(Thread.currentThread() + " We got a storage key, use this thread to read manifest");
         try {
             Optional<SignalStorageManifest> storageManifest = accountManager.getStorageManifest(storageKey);
+            SignalStorageManifest ssm = storageManifest.get();
             System.err.println("IDS = " + storageManifest.get().getStorageIds());
-            storageManifest.get().getStorageIds().forEach(si -> {
-                System.err.println("SI = "+si.hashCode()+" with type "+si.getType()+" and bl = "+si.getRaw().length+" and si = "
-                        +Arrays.toString(si.getRaw()));
+            ssm.getAccountStorageId();
+            ssm.getStorageIds().forEach(si -> {
+                System.err.println("SI = " + si.hashCode() + " with type " + si.getType() + " and bl = " + si.getRaw().length + " and si = "
+                        + Arrays.toString(si.getRaw()));
+            });
+            List<SignalStorageRecord> records = accountManager.readStorageRecords(storageKey, ssm.getStorageIds());
+            for (SignalStorageRecord record: records) {
+                System.err.println("Record "+record+" with type "+record.getType());
+                if (record.getGroupV2().isPresent()) {
+                    SignalGroupV2Record gr = record.getGroupV2().get();
+                    System.err.println("GROUP: "+gr.getId()+" with master "+Arrays.toString(gr.getMasterKeyBytes()));
+                    GroupMasterKey groupMasterKey = gr.getMasterKeyOrThrow();
+                    GroupSecretParams groupSecretParams = GroupSecretParams.deriveFromMasterKey(groupMasterKey);
+                    int days = (int)LocalDate.now().toEpochDay();
+
+                    GroupsV2AuthorizationString authorization = accountManager.getGroupsV2Api().getGroupsV2AuthorizationString(
+                            this.credentialsProvider.getUuid(), 
+                            days, groupSecretParams,groupCredentials.get(days));
+
+                    String title = accountManager.getGroupsV2Api().getGroup(groupSecretParams, authorization).getTitle();
+                    System.err.println("GroupTitle = "+title);
+                }
             }
-            );
         } catch (IOException ex) {
-            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+            ex.printStackTrace();
+        } catch (InvalidKeyException ex) {
+            ex.printStackTrace();
+        } catch (VerificationFailedException ex) {
+ex.printStackTrace();
+        } catch (InvalidGroupStateException ex) {
+            ex.printStackTrace();
         }
     }
-    
-    
+
+
     class ClientConnectivityListener implements ConnectivityListener {
 
         private final CountDownLatch connectedLatch = new CountDownLatch(1);
