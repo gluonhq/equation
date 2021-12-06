@@ -18,7 +18,7 @@ public class Contact {
         this.uuid = uuid;
         this.nr = nr;
     }
-    
+
     public String getName() {
         return name;
     }
@@ -30,15 +30,21 @@ public class Contact {
     public String getNr() {
         return nr;
     }
-    
+
     public String getAvatarPath() {
         return avatarPath;
     }
-    
+
+    public boolean isActive() {
+        boolean isActive =  ((this.profileKey != null) && (this.profileKey.length > 0));
+        System.err.println("ia asked "+isActive);
+        return isActive;
+    }
+
     public void setProfileKey(byte[] b) {
         this.profileKey = b;
     }
-    
+
     public void setAvatarPath(String b) {
         this.avatarPath = b;
     }

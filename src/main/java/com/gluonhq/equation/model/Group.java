@@ -18,7 +18,6 @@ public class Group {
         this.name = name;
         this.id = id;
         this.members = members;
-
     }
     
     public String getName() {

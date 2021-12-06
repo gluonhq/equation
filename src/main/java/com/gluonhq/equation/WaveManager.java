@@ -56,6 +56,7 @@ import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
+import org.signal.storageservice.protos.groups.local.DecryptedGroup;
 import org.signal.zkgroup.VerificationFailedException;
 import org.signal.zkgroup.auth.AuthCredentialResponse;
 import org.signal.zkgroup.groups.GroupMasterKey;
@@ -282,10 +283,11 @@ public class WaveManager {
             this.ensureConnected();
             accountManager.getRemoteConfig();
             if (firstRun) {
-                System.err.println("FIRSTRUN, get group certificate");
-                long days = LocalDate.now().toEpochDay();
-                groupCredentials = this.accountManager.getGroupsV2Api().getCredentials((int) days);
+                System.err.println("FIRSTRUN");
             }
+            // get group certificate");
+            long days = LocalDate.now().toEpochDay();
+            groupCredentials = this.accountManager.getGroupsV2Api().getCredentials((int) days);
             syncKeys();
             getWaveLogger().log(Level.DEBUG, "we are connected, let's sync");
             syncEverything();
@@ -321,7 +323,7 @@ public class WaveManager {
 
     public void syncEverything() throws IOException {
         WAVELOG.log(Level.INFO, "[WM] startSyncEverything");
-       // syncConfiguration();
+        syncConfiguration();
         syncContacts();
      //  syncGroups();
         WAVELOG.log(Level.INFO, "[WM] doneSyncEverything");
@@ -412,7 +414,6 @@ public class WaveManager {
      * @return 
      */
     public ObservableList<Contact> getContacts() {
-
         if (contactStorageDirty) {
             try {
                 contacts.clear(); // TODO make this smarter
@@ -423,6 +424,10 @@ public class WaveManager {
             }
         }
         return contacts;
+    }
+
+    public ObservableList<Group> getGroups() {
+        return groups;
     }
 
     /**
@@ -1022,7 +1027,6 @@ public class WaveManager {
             e.printStackTrace();
         }
         WAVELOG.log(Level.INFO, "WaveManager has done reading/sync contacts ");
-
     }
     
     private List<Contact> readContacts() throws IOException {
@@ -1083,20 +1087,6 @@ public class WaveManager {
             Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
 
             InputStream ois = new FileInputStream(attFile);
-            
-            
-            
-//            int av = ais.available();
-//            byte[] buff = new byte[av];
-//            int r = ais.read(buff);
-//            System.err.println("I did read "+r+" bytes, av = "+av);
-//            System.err.println("bytes = "+Arrays.toString(buff));
-//            Path attPath = Files.createTempFile("groupatt", "bin");
-//            File attFile = attPath.toFile();
-//            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
-////            InputStream ois = new FileInputStream(attFile);
-//            InputStream ois = new FileInputStream(output.toFile());
-            
             DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
             DeviceGroup dg = is.read();
             groups.clear();
@@ -1146,9 +1136,11 @@ public class WaveManager {
                     GroupsV2AuthorizationString authorization = accountManager.getGroupsV2Api().getGroupsV2AuthorizationString(
                             this.credentialsProvider.getUuid(), 
                             days, groupSecretParams,groupCredentials.get(days));
-
-                    String title = accountManager.getGroupsV2Api().getGroup(groupSecretParams, authorization).getTitle();
+                    DecryptedGroup dgroup = accountManager.getGroupsV2Api().getGroup(groupSecretParams, authorization);
+                    String title = dgroup.getTitle();
+                    Group group = new Group(title, groupMasterKey.serialize(), null);
                     System.err.println("GroupTitle = "+title);
+                    groups.add(group);
                 }
             }
         } catch (IOException ex) {
