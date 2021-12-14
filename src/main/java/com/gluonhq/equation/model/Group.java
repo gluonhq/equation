@@ -6,27 +6,27 @@
 package com.gluonhq.equation.model;
 
 import java.util.List;
+import org.signal.zkgroup.groups.GroupMasterKey;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 
 public class Group {
 
     private final String name;
-    private final byte[] id;
+    private final GroupMasterKey masterKey;
     private final List<SignalServiceAddress> members;
 
-    public Group(String name, byte[] id, List<SignalServiceAddress> members) {
+    public Group(String name, GroupMasterKey masterKey, List<SignalServiceAddress> members) {
         this.name = name;
-        this.id = id;
+        this.masterKey = masterKey;
         this.members = members;
-
     }
     
     public String getName() {
         return name;
     }
 
-    public byte[] getId() {
-        return id;
+    public GroupMasterKey getMasterKey() {
+        return masterKey;
     }
 
     public List<SignalServiceAddress> getMembers() {
