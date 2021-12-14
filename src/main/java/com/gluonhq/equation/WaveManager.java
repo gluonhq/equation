@@ -57,6 +57,7 @@ import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
 import org.signal.storageservice.protos.groups.local.DecryptedGroup;
+import org.signal.storageservice.protos.groups.local.DecryptedMember;
 import org.signal.zkgroup.VerificationFailedException;
 import org.signal.zkgroup.auth.AuthCredentialResponse;
 import org.signal.zkgroup.groups.GroupMasterKey;
@@ -71,7 +72,10 @@ import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.*;
 import org.whispersystems.signalservice.api.crypto.AttachmentCipherInputStream;
+import org.whispersystems.signalservice.api.crypto.ProfileCipher;
 import org.whispersystems.signalservice.api.crypto.SignalServiceCipher;
+import org.whispersystems.signalservice.api.crypto.UnidentifiedAccess;
+import org.whispersystems.signalservice.api.crypto.UnidentifiedAccessPair;
 import org.whispersystems.signalservice.api.crypto.UntrustedIdentityException;
 import org.whispersystems.signalservice.api.groupsv2.GroupsV2AuthorizationString;
 import org.whispersystems.signalservice.api.groupsv2.InvalidGroupStateException;
@@ -83,6 +87,7 @@ import org.whispersystems.signalservice.api.messages.SignalServiceContent;
 import org.whispersystems.signalservice.api.messages.SignalServiceDataMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceEnvelope;
 import org.whispersystems.signalservice.api.messages.SignalServiceGroupContext;
+import org.whispersystems.signalservice.api.messages.SignalServiceGroupV2;
 import org.whispersystems.signalservice.api.messages.SignalServiceReceiptMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceTypingMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.ContactsMessage;
@@ -103,6 +108,7 @@ import org.whispersystems.signalservice.api.storage.SignalStorageRecord;
 import org.whispersystems.signalservice.api.storage.StorageKey;
 import org.whispersystems.signalservice.api.util.CredentialsProvider;
 import org.whispersystems.signalservice.api.util.SleepTimer;
+import org.whispersystems.signalservice.api.util.UuidUtil;
 import org.whispersystems.signalservice.api.websocket.ConnectivityListener;
 import org.whispersystems.signalservice.internal.configuration.SignalCdnUrl;
 import org.whispersystems.signalservice.internal.configuration.SignalContactDiscoveryUrl;
@@ -138,6 +144,8 @@ public class WaveManager {
     private final LockImpl lock;
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
     private final ObservableList<Group> groups = FXCollections.observableArrayList();
+    
+    private final Map<String, Group> groupMap = new HashMap<>();
 
     final SignalServiceConfiguration signalServiceConfiguration;
 
@@ -193,6 +201,7 @@ public class WaveManager {
         if (isProvisioned()) {
             this.signalServiceAddress = new SignalServiceAddress(credentialsProvider.getUuid(), credentialsProvider.getE164());
         }
+        this.contactStorageDirty = true;
     }
 
     /**
@@ -414,6 +423,7 @@ public class WaveManager {
      * @return 
      */
     public ObservableList<Contact> getContacts() {
+        System.err.println("[WM] getContacts asked, csd = "+contactStorageDirty);
         if (contactStorageDirty) {
             try {
                 contacts.clear(); // TODO make this smarter
@@ -423,6 +433,8 @@ public class WaveManager {
                 ex.printStackTrace();
             }
         }
+        System.err.println("[WM] getContacts asked for "+Objects.hash(contacts)+" = "+ contacts);
+        System.err.println("#contacts = " + contacts.size());
         return contacts;
     }
 
@@ -443,13 +455,18 @@ public class WaveManager {
         return sendMessage(uuid, text, List.of());
     }
 
-    public long sendMessage(String uuid, String text, List<Path> attachment) throws IOException {
-        ensureConnected();
+    private List<SignalServiceAttachment> uploadAttachments(List<Path> attachment) throws IOException {
         List<SignalServiceAttachment> ssa = new LinkedList<>();
         for (Path path : attachment) {
             SignalServiceAttachmentPointer ptr = uploadAttachment(path);
             ssa.add(ptr);
         }
+        return ssa;
+    }
+    
+    public long sendMessage(String uuid, String text, List<Path> attachment) throws IOException {
+        ensureConnected();
+        List<SignalServiceAttachment> ssa = uploadAttachments(attachment);
         Contact target = contacts.stream().filter(c -> uuid.equals(c.getUuid())).findFirst().get();
         Optional<SignalServiceAddress> add = SignalServiceAddress.fromRaw(uuid, target.getNr());
         SignalServiceDataMessage message = SignalServiceDataMessage.newBuilder()
@@ -461,6 +478,41 @@ public class WaveManager {
             throw new IOException ("Could not send message! ", ex);
         }
         return message.getTimestamp();
+    }
+
+    public long sendGroupMessage(String uuid, String text, List<Path> attachment) throws IOException {
+        ensureConnected();
+        System.err.println("SENDGROUPMESSAGE, uuid = "+uuid+" and gm = "+groupMap);
+        Group mygroup = groupMap.get(uuid);
+        GroupMasterKey masterKey = mygroup.getMasterKey();
+        SignalServiceGroupV2 group = SignalServiceGroupV2.newBuilder(masterKey).build();
+        List<SignalServiceAttachment> ssa = uploadAttachments(attachment);
+        SignalServiceDataMessage message = SignalServiceDataMessage.newBuilder()
+                .withAttachments(ssa)
+                .asGroupMessage(group)
+                .withBody(text).build();
+        System.err.println("Send group");
+        List<SignalServiceAddress> recipients = mygroup.getMembers();
+        List<Optional<UnidentifiedAccessPair>> ua = new LinkedList();
+        for (int i = 0; i < mygroup.getMembers().size(); i++) {
+            ua.add(Optional.empty());
+        }
+        System.err.println("Sending to "+recipients+" and ua size = "+ua.size());
+        try {
+            Thread.sleep(3000);
+        } catch (InterruptedException ex) {
+            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
+        try {
+            List<SendMessageResult> res = sender.sendMessage(recipients,ua, false, message);
+            for (SendMessageResult smr :  res) {
+                System.err.println("RESULT = "+smr);
+            }
+        } catch (UntrustedIdentityException ex) {
+            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
+
+        return 0;
     }
 
     public SignalServiceAttachmentPointer uploadAttachment(Path p) throws IOException {
@@ -911,7 +963,15 @@ public class WaveManager {
             GroupMasterKey masterKey = groupCon.getGroupV2().get().getMasterKey();
             System.err.println("GROUPMESSAGE for masterKey "+masterKey);
             System.err.println("serial version of masterkey = "+
-                    Arrays.toString(masterKey.serialize()));
+            Arrays.toString(masterKey.serialize()));
+            Group g = getGroupByMasterKey(masterKey.serialize());
+            if (g == null) {
+                System.err.println("ERROR! message for unknown group");
+                Thread.dumpStack();
+                return;
+            }
+            System.err.println("Got message for group "+g.getName());
+            msg.setGroup(g);
         }
         if (this.messageListener != null) {
             String uuid = sender.getUuid().get().toString();
@@ -984,7 +1044,8 @@ public class WaveManager {
             InputStream ois = new FileInputStream(attFile);
             DeviceContactsInputStream is = new DeviceContactsInputStream(ois);
             DeviceContact dc = is.read();
-            contacts.clear();
+            System.err.println("Don't clear contacts at this point");
+        //    contacts.clear();
             int cnt = 0;
             int pcnt = 0;
             while (dc != null) {
@@ -997,8 +1058,15 @@ public class WaveManager {
                     UUID uuid = dc.getAddress().getUuid().get();
                     Future<SignalServiceProfile> fut = accountManager.getSocket().retrieveVersionedProfile(uuid, profileKey, Optional.empty());
                     SignalServiceProfile ssp = fut.get(10, TimeUnit.SECONDS);
+                    ProfileCipher pc = new ProfileCipher(profileKey);
+                    byte[] decryptName = pc.decryptName(Base64.decode(ssp.getName()));
+                    String realName = new String(decryptName);
+                    if (contact.getName().isEmpty()) {
+                        System.err.println("Replace "+contact.getNr()+" with "+realName);
+                        contact.setName(realName);
+                    }
                     System.err.println("GOT PROFILE: "+ssp+" with key "+Arrays.toString(profileKey.serialize()));
-                    System.err.println("profile["+pcnt+ "]= "+ssp.getName()+", "+ssp.getAbout()+", "+ssp.getAvatar());
+                    System.err.println("profile["+pcnt+ "]= "+ssp.getName()+", "+realName+", "+ssp.getAvatar());
                     pcnt++;
                 }
                 System.err.println("contact[cnt] = "+contact.getName());
@@ -1014,8 +1082,17 @@ public class WaveManager {
                     Files.write(avatarPath, b, StandardOpenOption.CREATE);
                     contact.setAvatarPath(avatarPath.toAbsolutePath().toString());
                 }
-
-                contacts.add(contact);
+                if (!contacts.contains(contact)) {
+                    System.err.println("New contact: "+contact.getName());
+                    Optional<Contact> oldOne = getContactByUuid(contact.getUuid());
+                    if (oldOne.isPresent()) {
+                        Contact old = oldOne.get();
+                        contacts.remove(old);
+                    }
+                    contacts.add(contact);
+                } else {
+                    System.err.println("We already had this contact: "+contact.getName());
+                }
                 if (ois.available() == 0) {
                     dc = null;
                 } else {
@@ -1027,20 +1104,26 @@ public class WaveManager {
             e.printStackTrace();
         }
         WAVELOG.log(Level.INFO, "WaveManager has done reading/sync contacts ");
+        System.err.println("[WM] contacts is now " + Objects.hash(contacts)+" = "+ contacts +" with size = " + contacts.size() );
     }
-    
+
     private List<Contact> readContacts() throws IOException {
+        System.err.println("[WM] READCONTACTS");
         List<Contact> answer = new LinkedList<>();
         Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("contactlist");
         if (Files.exists(path)) {
-            List<String> lines = Files.readAllLines(path);
-            for (int i = 0; i < lines.size(); i = i + 4) {
-                Contact c = new Contact(lines.get(i), lines.get(i + 1), lines.get(i + 2));
-                String avt = lines.get(i + 3);
-                c.setAvatarPath(avt);
-                answer.add(c);
-            }
+            String line = Files.readString(path);
+            answer = Contact.fromJson(line);
+//            List<String> lines = Files.readAllLines(path);
+//            
+//            for (int i = 0; i < lines.size(); i = i + 4) {
+//                Contact c = new Contact(lines.get(i), lines.get(i + 1), lines.get(i + 2));
+//                String avt = lines.get(i + 3);
+//                c.setAvatarPath(avt);
+//                answer.add(c);
+//            }
         }
+        System.err.println("WM did read: "+answer+"\n with "+answer.size()+" elements");
         return answer;
     }
     
@@ -1051,17 +1134,12 @@ public class WaveManager {
             Files.createDirectories(path.getParent());
         }
         Files.deleteIfExists(path);
-        List<String> lines = new LinkedList<>();
-        for (Contact contact : contacts) {
-            lines.add(contact.getName());
-            lines.add(contact.getUuid());
-            lines.add(contact.getNr());
-            lines.add(contact.getAvatarPath());
-        }
-        Files.write(path, lines, StandardOpenOption.CREATE);
+        String json = Contact.toJson(contacts);
+        Files.writeString(path, json, StandardOpenOption.CREATE);
         contactStorageDirty = true;
     }
 
+    // This seems to return groupv1 groups only, hence not used atm
     private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
         System.err.println("Processing groupsMessage, pointer? "+ssa.isPointer()
         +", stream? "+ssa.isStream());
@@ -1090,17 +1168,16 @@ public class WaveManager {
             DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
             DeviceGroup dg = is.read();
             groups.clear();
-            while (dg != null) {
-                try {
-                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
-                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and id "+Arrays.asList(g.getId()));
-                groups.add(g);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-                dg = is.read();
-            }
-            
+//            while (dg != null) {
+//                try {
+//                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
+//                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and mkb "+Arrays.asList(g.getMasterKeyBytes()));
+//                groups.add(g);
+//                } catch (Exception e) {
+//                    e.printStackTrace();
+//                }
+//                dg = is.read();
+//            }
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -1138,9 +1215,20 @@ public class WaveManager {
                             days, groupSecretParams,groupCredentials.get(days));
                     DecryptedGroup dgroup = accountManager.getGroupsV2Api().getGroup(groupSecretParams, authorization);
                     String title = dgroup.getTitle();
-                    Group group = new Group(title, groupMasterKey.serialize(), null);
+
                     System.err.println("GroupTitle = "+title);
+                    System.err.println("#members = "+  dgroup.getMembersCount());
+                    System.err.println("members = "+dgroup.getMembersList());
+                   List<SignalServiceAddress> memberList = new LinkedList<>();
+                    for (DecryptedMember member:  dgroup.getMembersList()) {
+                        UUID uuid = UuidUtil.fromByteString(member.getUuid());
+                        SignalServiceAddress add = new SignalServiceAddress(Optional.of(uuid), Optional.empty());
+                        memberList.add(add);
+                    }
+                    Group group = new Group(title, groupMasterKey, memberList);
                     groups.add(group);
+                    groupMap.put(title, group);
+
                 }
             }
         } catch (IOException ex) {
@@ -1152,6 +1240,12 @@ ex.printStackTrace();
         } catch (InvalidGroupStateException ex) {
             ex.printStackTrace();
         }
+    }
+    
+    private Group getGroupByMasterKey(byte[] keybytes) {
+        Group answer = groups.stream().filter(g -> Arrays.equals(g.getMasterKey().serialize(), keybytes))
+                .findFirst().orElse(null);
+        return answer;
     }
 
 

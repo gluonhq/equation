@@ -19,12 +19,21 @@ public class Message {
     String content;
     long timestamp;
     String receiverUuid;
+    Group group;
+
     List<Path> attachment = new LinkedList<>();
     
     public Message () {
-        
     }
-    
+
+    public void setGroup(Group g) {
+        this.group = g;
+    }
+
+    public Group getGroup() {
+        return this.group;
+    }
+
     public Message senderUuid(String v) {
         this.senderUuid = v;
         return this;

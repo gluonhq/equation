@@ -19,6 +19,9 @@ module com.gluonhq.wave {
     exports com.gluonhq.equation.provision;
     exports com.gluonhq.equation.util;
 
+    opens com.gluonhq.equation.model to com.fasterxml.jackson.databind;
+
+
     // in case we want to deal with System logging itself:
     // provides java.lang.System.LoggerFinder
     //   with com.gluonhq.equation.log.WaveLoggerFinder;
