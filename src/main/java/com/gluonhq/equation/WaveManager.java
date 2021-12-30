@@ -66,13 +66,17 @@ import org.signal.zkgroup.profiles.ProfileKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
+import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
+import org.whispersystems.libsignal.protocol.SenderKeyDistributionMessage;
+import org.whispersystems.libsignal.protocol.SignalProtos.DecryptionErrorMessage;
 import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.*;
 import org.whispersystems.signalservice.api.crypto.AttachmentCipherInputStream;
 import org.whispersystems.signalservice.api.crypto.ProfileCipher;
+import org.whispersystems.signalservice.api.crypto.SignalGroupSessionBuilder;
 import org.whispersystems.signalservice.api.crypto.SignalServiceCipher;
 import org.whispersystems.signalservice.api.crypto.UnidentifiedAccess;
 import org.whispersystems.signalservice.api.crypto.UnidentifiedAccessPair;
@@ -118,6 +122,7 @@ import org.whispersystems.signalservice.internal.configuration.SignalServiceUrl;
 import org.whispersystems.signalservice.internal.configuration.SignalStorageUrl;
 import org.whispersystems.signalservice.internal.push.SignalServiceProtos;
 import org.whispersystems.signalservice.internal.push.SignalServiceProtos.SyncMessage;
+import org.whispersystems.signalservice.internal.util.Hex;
 import org.whispersystems.signalservice.internal.util.StaticCredentialsProvider;
 import org.whispersystems.signalservice.internal.websocket.WebSocketProtos.WebSocketRequestMessage;
 import org.whispersystems.util.Base64;
@@ -763,6 +768,7 @@ public class WaveManager {
                         WAVELOG.log(Level.DEBUG, "[MessagePipe] waiting for envelope...");
                         SignalServiceEnvelope envelope = pipe.read(300, TimeUnit.SECONDS);
                         WAVELOG.log(Level.DEBUG, "[MessagePipe] got envelope " + Objects.hashCode(envelope)+ " and Type = " + envelope.getType());
+
                         SignalServiceContent content = mydecrypt(envelope);
                         WAVELOG.log(Level.DEBUG, "[MessagePipe] got content: " + content);
                         if (content != null) {
@@ -772,16 +778,24 @@ public class WaveManager {
                                 processSyncMessage(content.getSender(), sssm);
                             }
                             if (content.getDataMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has datamessage");
                                 SignalServiceDataMessage ssdm = content.getDataMessage().get();
                                 processDataMessage(content.getSender(), ssdm);
                             }
                             if (content.getTypingMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has typingmessage");
                                 SignalServiceTypingMessage sstm = content.getTypingMessage().get();
                                 processTypingMessage(content.getSender(), sstm);
                             }
                             if (content.getReceiptMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has receiptmessage");
                                 SignalServiceReceiptMessage ssrm = content.getReceiptMessage().get();
                                 processReceiptMessage(content.getSender(), ssrm);
+                            }
+                            if (content.getSenderKeyDistributionMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has senderkeydistmessage");
+                                SenderKeyDistributionMessage sskdm = content.getSenderKeyDistributionMessage().get();
+                                processSenderKeyDistributionMessage(content.getSender(), content.getSenderDevice(), sskdm);
                             }
                         }
                     } catch (TimeoutException toe) {
@@ -835,9 +849,10 @@ public class WaveManager {
         SignalServiceContent content = null;
         try {
             int bl = sse.getContent().length;
-            WAVELOG.log(Level.DEBUG, "I need to decrypt " + sse+" with " +bl+" bytes, with id "+Objects.hashCode(sse));
+            WAVELOG.log(Level.DEBUG, "I need to decrypt " + sse + " with " + bl 
+                    + " bytes, with id " + Objects.hashCode(sse));
             content = cipher.decrypt(sse);
-            WAVELOG.log(Level.DEBUG, "I did to decrypt " + sse+" with id "+Objects.hashCode(sse));
+            WAVELOG.log(Level.DEBUG, "I did to decrypt " + sse + " with id " + Objects.hashCode(sse));
         } catch (ProtocolNoSessionException e) {
             String senderId = e.getSender();
             int senderDevice = e.getSenderDevice();
@@ -857,23 +872,35 @@ public class WaveManager {
                 if (contact.isPresent()) {
                     tuuid = contact.get().getUuid();
                 } else {
-                    throw new IllegalArgumentException ("Unknown sender: "+senderId);
+                    throw new IllegalArgumentException("Unknown sender: " + senderId);
                 }
             }
             SignalServiceAddress addy
                     = new SignalServiceAddress(UUID.fromString(tuuid), senderId);
-            WAVELOG.log(Level.INFO, " decrypt will send nullmessage to "+addy);
+            WAVELOG.log(Level.INFO, " decrypt will send nullmessage to " + addy);
             sender.sendNullMessage(addy, Optional.empty());
-            int bl2 = sse.getContent().length;
-            WAVELOG.log(Level.DEBUG, " did send null message, we should have session now for "+bl2+" bytes");
+            if (sse.isUnidentifiedSender()) {
+                Optional<byte[]> optGroupId = e.getGroupId();
+                byte[] groupId = optGroupId.get();
+                if (groupId.length == 32) {
+                    System.err.println("GroupV2");
+                    String encodedId = "__signal_group__v2__!" + Hex.toStringCondensed(groupId);
+                    byte[] originalContent = sse.getContent();
+                    int envelopeType = sse.getType();
+                    DecryptionErrorMessage decryptionErrorMessage = DecryptionErrorMessage.newBuilder().build();
+                    sender.sendRetryReceipt(addy, Optional.empty(), Optional.of(groupId), decryptionErrorMessage);
 
+                } else {
+                    System.err.println("groupv1?");
+                }
+            }
+            int bl2 = sse.getContent().length;
+            WAVELOG.log(Level.DEBUG, " did send null message, we should have session now for " + bl2 + " bytes");
             SignalServiceCipher cipher2 = new SignalServiceCipher(signalServiceAddress,
-                waveStore,
-                new LockImpl(),
-                getCertificateValidator());
+                    waveStore, new LockImpl(), getCertificateValidator());
             content = cipher2.decrypt(sse);
         }
-        WAVELOG.log(Level.DEBUG, " descrypt will return "+content);
+        WAVELOG.log(Level.DEBUG, " descrypt will return " + content);
         return content;
     }
 
@@ -994,6 +1021,12 @@ public class WaveManager {
                 this.messageListener.gotMessage(uuid, content, ssdm.getTimestamp(), recuuid);
             }
         }
+    }
+
+    private void processSenderKeyDistributionMessage(SignalServiceAddress senderAddress, int deviceId, SenderKeyDistributionMessage msg) {
+        SignalProtocolAddress addy = new SignalProtocolAddress(senderAddress.getIdentifier(), deviceId);
+        System.err.println("WM process senderkeydistributionmessage for addy = "+addy+", senderadd = "+senderAddress+", sai = "+senderAddress.getIdentifier()+", devid = "+deviceId);
+        sender.processSenderKeyDistributionMessage(addy, msg);
     }
 
     private static CertificateValidator getCertificateValidator() {

@@ -24,6 +24,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Logger;
@@ -52,6 +53,7 @@ public class WaveStore implements SignalServiceProtocolStore {
     private IdentityKeyPair identityKeyPair;
     Map<Integer, PreKeyRecord> map = new HashMap<>();
     Map<Integer, SignedPreKeyRecord> signedMap = new HashMap<>();
+    Map<MySenderKey, SenderKeyRecord> senderKeyMap = new HashMap<>();
 
     private StaticCredentialsProvider credentialsProvider;
 
@@ -197,6 +199,11 @@ public class WaveStore implements SignalServiceProtocolStore {
     @Override
     public void removePreKey(int i) {
         map.remove(i);
+        try {
+            deletePreKey(i);
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
     }
 
     @Override
@@ -225,6 +232,7 @@ public class WaveStore implements SignalServiceProtocolStore {
     @Override
     public void removeSignedPreKey(int i) {
         signedMap.remove(i);
+        persistSignedPreKeys();
     }
 
     @Override
@@ -407,6 +415,11 @@ public class WaveStore implements SignalServiceProtocolStore {
         }
         Files.write(path, pkr.serialize());
     }
+    
+    private void deletePreKey(int i) throws IOException {
+        Path ppath = SIGNAL_FX_STORE_PATH.resolve("prekeys").resolve(Integer.toString(i));
+        Files.delete(ppath);
+    }
 
     private boolean retrievePreKeys() throws IOException {
         Path ppath = SIGNAL_FX_STORE_PATH.resolve("prekeys");
@@ -530,13 +543,73 @@ public class WaveStore implements SignalServiceProtocolStore {
     }
 
     @Override
-    public void storeSenderKey(SenderKeyName senderKeyName, SenderKeyRecord record) {
+    public void storeSenderKey(SignalProtocolAddress sender, UUID distributionId, SenderKeyRecord record) {
+        MySenderKey msk = new MySenderKey(sender, distributionId);
+        senderKeyMap.put(msk, record);
+        System.err.println("stored sender, keymap = "+senderKeyMap);
+    }
+
+    @Override
+    public SenderKeyRecord loadSenderKey(SignalProtocolAddress sender, UUID distributionId) {
+        System.err.println("LSK asked for sender = "+sender);
+        System.err.println("senderdvid = "+sender.getDeviceId());
+        MySenderKey msk = new MySenderKey(sender, distributionId);
+        SenderKeyRecord answer = senderKeyMap.get(msk);
+        System.err.println("got answer "+answer+", keymap = "+senderKeyMap);
+
+        if (answer == null) answer = new SenderKeyRecord();
+        return answer;
+    }
+
+    @Override
+    public boolean isMultiDevice() {
         throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
     }
 
     @Override
-    public SenderKeyRecord loadSenderKey(SenderKeyName senderKeyName) {
+    public Transaction beginTransaction() {
         throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
     }
 
+    static class MySenderKey {
+
+        private final SignalProtocolAddress sender;
+        private final UUID distributionId;
+        
+        MySenderKey(SignalProtocolAddress sender, UUID distributionId) {
+            this.sender = sender;
+            this.distributionId = distributionId;
+        }
+
+        @Override
+        public int hashCode() {
+            int hash = 7;
+            hash = 11 * hash + this.sender.hashCode();
+            hash = 11 * hash + this.distributionId.hashCode();
+            return hash;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (obj == null) {
+                return false;
+            }
+            if (getClass() != obj.getClass()) {
+                return false;
+            }
+            final MySenderKey other = (MySenderKey) obj;
+            if (!Objects.equals(this.sender, other.sender)) {
+                return false;
+            }
+            if (!Objects.equals(this.distributionId, other.distributionId)) {
+                return false;
+            }
+            return true;
+        }
+        
+    }
+   
 }

@@ -6,7 +6,8 @@ module com.gluonhq.wave {
     requires org.whispersystems.protocol;
     requires org.whispersystems.service;
 
-    requires bcprov.jdk15on;
+    requires org.bouncycastle.provider;
+    // requires bcprov.jdk15on;
     requires com.fasterxml.jackson.core;
     requires com.fasterxml.jackson.databind;
     requires com.google.zxing;

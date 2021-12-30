@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.gluonhq</groupId>
     <artifactId>equation</artifactId>
-    <version>0.9.16</version>
+    <version>0.9.17-SNAPSHOT</version>
     <packaging>jar</packaging>
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -20,7 +20,7 @@
         <dependency>
           <groupId>org.whispersystems</groupId>
           <artifactId>signal-service-java</artifactId>
-          <version>2.15.4-gluon-11</version>
+          <version>2.15.4-gluon-12-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>org.openjfx</groupId>
@@ -40,12 +40,12 @@
         <dependency>
           <groupId>org.bouncycastle</groupId>
           <artifactId>bcpkix-jdk15on</artifactId>
-          <version>1.58</version>
+          <version>1.70</version>
         </dependency>
         <dependency>
           <groupId>org.bouncycastle</groupId>
           <artifactId>bcprov-jdk15on</artifactId>
-          <version>1.58</version>
+          <version>1.70</version>
         </dependency>
         <dependency>
             <groupId>com.google.zxing</groupId>
