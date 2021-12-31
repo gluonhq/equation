@@ -920,7 +920,8 @@ public class WaveManager {
             System.err.println("INSYNC groups!");
             WAVELOG.log(Level.DEBUG, "WaveManager has groupssyncmessage!");
             SignalServiceAttachment get = sssm.getGroups().get();
-            processGroupsMessage(get);
+            throw new RuntimeException("we don't expect v1 groups anymore");
+     //       processGroupsMessage(get);
         }
         if (sssm.getKeys().isPresent()) {
             System.err.println("INSYNC KEYS");
@@ -945,6 +946,10 @@ public class WaveManager {
 
     void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm) {
         WAVELOG.log(Level.INFO, "Process datamessage");
+        if (ssdm.getProfileKey().isPresent()) {
+            System.err.println("I NEED TO HANDLE A PROFILE with key ");
+           // handleProfileKey(ssdm);
+        }
         Message msg = new Message();
         Optional<List<SignalServiceAttachment>> attachmentsOpt = ssdm.getAttachments();
         if (attachmentsOpt.isPresent()) {
@@ -1173,49 +1178,49 @@ public class WaveManager {
     }
 
     // This seems to return groupv1 groups only, hence not used atm
-    private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
-        System.err.println("Processing groupsMessage, pointer? "+ssa.isPointer()
-        +", stream? "+ssa.isStream());
-        SignalServiceAttachmentPointer pointer = ssa.asPointer();
-        Path output = Files.createTempFile("pre", "post");
-            Path mattPath = Files.createTempFile("r", "bin");
-
-        try {
-            InputStream is = receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
-            File attFile = mattPath.toFile();
-            Files.copy(is, mattPath, StandardCopyOption.REPLACE_EXISTING);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            throw new IOException("Can't retrieve attachment", ex);
-        }
-        System.err.println("MATTPATH = "+mattPath+", OUT = "+output);
-        try {
-            byte[] digest = pointer.getDigest().get();
-            InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
-                      
-            Path attPath = Files.createTempFile("agg", "bin");
-            File attFile = attPath.toFile();
-            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
-
-            InputStream ois = new FileInputStream(attFile);
-            DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
-            DeviceGroup dg = is.read();
-            groups.clear();
-//            while (dg != null) {
-//                try {
-//                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
-//                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and mkb "+Arrays.asList(g.getMasterKeyBytes()));
-//                groups.add(g);
-//                } catch (Exception e) {
-//                    e.printStackTrace();
-//                }
-//                dg = is.read();
-//            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-            
-    }
+//    private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
+//        System.err.println("Processing groupsMessage, pointer? "+ssa.isPointer()
+//        +", stream? "+ssa.isStream());
+//        SignalServiceAttachmentPointer pointer = ssa.asPointer();
+//        Path output = Files.createTempFile("pre", "post");
+//            Path mattPath = Files.createTempFile("r", "bin");
+//
+//        try {
+//            InputStream is = receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
+//            File attFile = mattPath.toFile();
+//            Files.copy(is, mattPath, StandardCopyOption.REPLACE_EXISTING);
+//        } catch (Exception ex) {
+//            ex.printStackTrace();
+//            throw new IOException("Can't retrieve attachment", ex);
+//        }
+//        System.err.println("MATTPATH = "+mattPath+", OUT = "+output);
+//        try {
+//            byte[] digest = pointer.getDigest().get();
+//            InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
+//                      
+//            Path attPath = Files.createTempFile("agg", "bin");
+//            File attFile = attPath.toFile();
+//            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
+//
+//            InputStream ois = new FileInputStream(attFile);
+//            DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
+//            DeviceGroup dg = is.read();
+//            groups.clear();
+////            while (dg != null) {
+////                try {
+////                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
+////                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and mkb "+Arrays.asList(g.getMasterKeyBytes()));
+////                groups.add(g);
+////                } catch (Exception e) {
+////                    e.printStackTrace();
+////                }
+////                dg = is.read();
+////            }
+//        } catch (Exception e) {
+//            e.printStackTrace();
+//        }
+//            
+//    }
 
     private void processKeysMessage(KeysMessage keysMessage) {
         this.storageKey = keysMessage.getStorageService().get();
