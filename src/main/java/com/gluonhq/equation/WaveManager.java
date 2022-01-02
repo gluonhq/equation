@@ -191,6 +191,7 @@ public class WaveManager {
     
     private SignalServiceAddress signalServiceAddress;
     private boolean contactStorageDirty = true;
+    private boolean groupStorageDirty = true;
     private ProvisioningManager provisioningManager;
     public static WaveLogger WAVELOG;
     private AccountManager accountManager;
@@ -444,6 +445,18 @@ public class WaveManager {
     }
 
     public ObservableList<Group> getGroups() {
+        System.err.println("[WM] getGroups asked, csd = "+groupStorageDirty);
+        if (groupStorageDirty) {
+            try {
+                groups.clear(); // TODO make this smarter
+                groups.addAll(readGroups());
+                groupStorageDirty = false;
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
+        }
+        System.err.println("[WM] getContacts asked for "+Objects.hash(contacts)+" = "+ contacts);
+        System.err.println("#contacts = " + contacts.size());
         return groups;
     }
 
@@ -1152,14 +1165,6 @@ public class WaveManager {
         if (Files.exists(path)) {
             String line = Files.readString(path);
             answer = Contact.fromJson(line);
-//            List<String> lines = Files.readAllLines(path);
-//            
-//            for (int i = 0; i < lines.size(); i = i + 4) {
-//                Contact c = new Contact(lines.get(i), lines.get(i + 1), lines.get(i + 2));
-//                String avt = lines.get(i + 3);
-//                c.setAvatarPath(avt);
-//                answer.add(c);
-//            }
         }
         System.err.println("WM did read: "+answer+"\n with "+answer.size()+" elements");
         return answer;
@@ -1175,6 +1180,30 @@ public class WaveManager {
         String json = Contact.toJson(contacts);
         Files.writeString(path, json, StandardOpenOption.CREATE);
         contactStorageDirty = true;
+    }
+    
+    private List<Group> readGroups() throws IOException {
+        System.err.println("[WM] READGROUPS");
+        List<Group> answer = new LinkedList<>();
+        Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("grouplist");
+        if (Files.exists(path)) {
+            String line = Files.readString(path);
+            answer = Group.fromJson(line);
+        }
+        System.err.println("WM did read: "+answer+"\n with "+answer.size()+" elements");
+        return answer;
+    }
+    
+    private void storeGroups() throws IOException {
+        WAVELOG.log(Level.INFO, "store groups");
+        Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("grouplist");
+        if (!Files.exists(path.getParent())) {
+            Files.createDirectories(path.getParent());
+        }
+        Files.deleteIfExists(path);
+        String json = Group.toJson(groups);
+        Files.writeString(path, json, StandardOpenOption.CREATE);
+        groupStorageDirty = true;
     }
 
     // This seems to return groupv1 groups only, hence not used atm
@@ -1264,11 +1293,21 @@ public class WaveManager {
                         memberList.add(add);
                     }
                     Group group = new Group(title, groupMasterKey, memberList);
-                    groups.add(group);
-                    groupMap.put(title, group);
+                    Optional<Group> exists = groups.stream().filter(g -> 
+                            Arrays.equals(g.getMasterKey().serialize(), group.getMasterKey().serialize()))
+                            .findFirst();
+                    if (exists.isPresent()) {
+                        System.err.println("GROUP "+title+" exists!");
+                        exists.get().update(group);
+                    } else {
+                        System.err.println("GROUP "+title+" is new!");
+                        groups.add(group);
+                        groupMap.put(title, group);
+                    }
 
                 }
             }
+            storeGroups();
         } catch (IOException ex) {
             ex.printStackTrace();
         } catch (InvalidKeyException ex) {
