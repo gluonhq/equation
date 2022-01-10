@@ -66,13 +66,17 @@ import org.signal.zkgroup.profiles.ProfileKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
+import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
+import org.whispersystems.libsignal.protocol.SenderKeyDistributionMessage;
+import org.whispersystems.libsignal.protocol.SignalProtos.DecryptionErrorMessage;
 import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.*;
 import org.whispersystems.signalservice.api.crypto.AttachmentCipherInputStream;
 import org.whispersystems.signalservice.api.crypto.ProfileCipher;
+import org.whispersystems.signalservice.api.crypto.SignalGroupSessionBuilder;
 import org.whispersystems.signalservice.api.crypto.SignalServiceCipher;
 import org.whispersystems.signalservice.api.crypto.UnidentifiedAccess;
 import org.whispersystems.signalservice.api.crypto.UnidentifiedAccessPair;
@@ -118,6 +122,7 @@ import org.whispersystems.signalservice.internal.configuration.SignalServiceUrl;
 import org.whispersystems.signalservice.internal.configuration.SignalStorageUrl;
 import org.whispersystems.signalservice.internal.push.SignalServiceProtos;
 import org.whispersystems.signalservice.internal.push.SignalServiceProtos.SyncMessage;
+import org.whispersystems.signalservice.internal.util.Hex;
 import org.whispersystems.signalservice.internal.util.StaticCredentialsProvider;
 import org.whispersystems.signalservice.internal.websocket.WebSocketProtos.WebSocketRequestMessage;
 import org.whispersystems.util.Base64;
@@ -186,6 +191,7 @@ public class WaveManager {
     
     private SignalServiceAddress signalServiceAddress;
     private boolean contactStorageDirty = true;
+    private boolean groupStorageDirty = true;
     private ProvisioningManager provisioningManager;
     public static WaveLogger WAVELOG;
     private AccountManager accountManager;
@@ -333,8 +339,7 @@ public class WaveManager {
     public void syncEverything() throws IOException {
         WAVELOG.log(Level.INFO, "[WM] startSyncEverything");
         syncConfiguration();
-        syncContacts();
-     //  syncGroups();
+    //    syncContacts();
         WAVELOG.log(Level.INFO, "[WM] doneSyncEverything");
     }
     
@@ -439,6 +444,21 @@ public class WaveManager {
     }
 
     public ObservableList<Group> getGroups() {
+        System.err.println("[WM] getGroups asked, csd = "+groupStorageDirty);
+        if (groupStorageDirty) {
+            try {
+                groups.clear(); // TODO make this smarter
+                groups.addAll(readGroups());
+                for (Group g : groups) {
+                    groupMap.put(g.getName(), g);
+                }
+                groupStorageDirty = false;
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
+        }
+        System.err.println("[WM] getContacts asked for "+Objects.hash(contacts)+" = "+ contacts);
+        System.err.println("#contacts = " + contacts.size());
         return groups;
     }
 
@@ -498,11 +518,6 @@ public class WaveManager {
             ua.add(Optional.empty());
         }
         System.err.println("Sending to "+recipients+" and ua size = "+ua.size());
-        try {
-            Thread.sleep(3000);
-        } catch (InterruptedException ex) {
-            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
-        }
         try {
             List<SendMessageResult> res = sender.sendMessage(recipients,ua, false, message);
             for (SendMessageResult smr :  res) {
@@ -763,6 +778,7 @@ public class WaveManager {
                         WAVELOG.log(Level.DEBUG, "[MessagePipe] waiting for envelope...");
                         SignalServiceEnvelope envelope = pipe.read(300, TimeUnit.SECONDS);
                         WAVELOG.log(Level.DEBUG, "[MessagePipe] got envelope " + Objects.hashCode(envelope)+ " and Type = " + envelope.getType());
+
                         SignalServiceContent content = mydecrypt(envelope);
                         WAVELOG.log(Level.DEBUG, "[MessagePipe] got content: " + content);
                         if (content != null) {
@@ -772,16 +788,24 @@ public class WaveManager {
                                 processSyncMessage(content.getSender(), sssm);
                             }
                             if (content.getDataMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has datamessage");
                                 SignalServiceDataMessage ssdm = content.getDataMessage().get();
                                 processDataMessage(content.getSender(), ssdm);
                             }
                             if (content.getTypingMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has typingmessage");
                                 SignalServiceTypingMessage sstm = content.getTypingMessage().get();
                                 processTypingMessage(content.getSender(), sstm);
                             }
                             if (content.getReceiptMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has receiptmessage");
                                 SignalServiceReceiptMessage ssrm = content.getReceiptMessage().get();
                                 processReceiptMessage(content.getSender(), ssrm);
+                            }
+                            if (content.getSenderKeyDistributionMessage().isPresent()) {
+                                WAVELOG.log(Level.DEBUG,"[MessagePipe] envelope has senderkeydistmessage");
+                                SenderKeyDistributionMessage sskdm = content.getSenderKeyDistributionMessage().get();
+                                processSenderKeyDistributionMessage(content.getSender(), content.getSenderDevice(), sskdm);
                             }
                         }
                     } catch (TimeoutException toe) {
@@ -835,9 +859,10 @@ public class WaveManager {
         SignalServiceContent content = null;
         try {
             int bl = sse.getContent().length;
-            WAVELOG.log(Level.DEBUG, "I need to decrypt " + sse+" with " +bl+" bytes, with id "+Objects.hashCode(sse));
+            WAVELOG.log(Level.DEBUG, "I need to decrypt " + sse + " with " + bl 
+                    + " bytes, with id " + Objects.hashCode(sse));
             content = cipher.decrypt(sse);
-            WAVELOG.log(Level.DEBUG, "I did to decrypt " + sse+" with id "+Objects.hashCode(sse));
+            WAVELOG.log(Level.DEBUG, "I did to decrypt " + sse + " with id " + Objects.hashCode(sse));
         } catch (ProtocolNoSessionException e) {
             String senderId = e.getSender();
             int senderDevice = e.getSenderDevice();
@@ -857,23 +882,35 @@ public class WaveManager {
                 if (contact.isPresent()) {
                     tuuid = contact.get().getUuid();
                 } else {
-                    throw new IllegalArgumentException ("Unknown sender: "+senderId);
+                    throw new IllegalArgumentException("Unknown sender: " + senderId);
                 }
             }
             SignalServiceAddress addy
                     = new SignalServiceAddress(UUID.fromString(tuuid), senderId);
-            WAVELOG.log(Level.INFO, " decrypt will send nullmessage to "+addy);
+            WAVELOG.log(Level.INFO, " decrypt will send nullmessage to " + addy);
             sender.sendNullMessage(addy, Optional.empty());
-            int bl2 = sse.getContent().length;
-            WAVELOG.log(Level.DEBUG, " did send null message, we should have session now for "+bl2+" bytes");
+            if (sse.isUnidentifiedSender()) {
+                Optional<byte[]> optGroupId = e.getGroupId();
+                byte[] groupId = optGroupId.get();
+                if (groupId.length == 32) {
+                    System.err.println("GroupV2");
+                    String encodedId = "__signal_group__v2__!" + Hex.toStringCondensed(groupId);
+                    byte[] originalContent = sse.getContent();
+                    int envelopeType = sse.getType();
+                    DecryptionErrorMessage decryptionErrorMessage = DecryptionErrorMessage.newBuilder().build();
+                    sender.sendRetryReceipt(addy, Optional.empty(), Optional.of(groupId), decryptionErrorMessage);
 
+                } else {
+                    System.err.println("groupv1?");
+                }
+            }
+            int bl2 = sse.getContent().length;
+            WAVELOG.log(Level.DEBUG, " did send null message, we should have session now for " + bl2 + " bytes");
             SignalServiceCipher cipher2 = new SignalServiceCipher(signalServiceAddress,
-                waveStore,
-                new LockImpl(),
-                getCertificateValidator());
+                    waveStore, new LockImpl(), getCertificateValidator());
             content = cipher2.decrypt(sse);
         }
-        WAVELOG.log(Level.DEBUG, " descrypt will return "+content);
+        WAVELOG.log(Level.DEBUG, " descrypt will return " + content);
         return content;
     }
 
@@ -893,7 +930,8 @@ public class WaveManager {
             System.err.println("INSYNC groups!");
             WAVELOG.log(Level.DEBUG, "WaveManager has groupssyncmessage!");
             SignalServiceAttachment get = sssm.getGroups().get();
-            processGroupsMessage(get);
+            throw new RuntimeException("we don't expect v1 groups anymore");
+     //       processGroupsMessage(get);
         }
         if (sssm.getKeys().isPresent()) {
             System.err.println("INSYNC KEYS");
@@ -918,6 +956,10 @@ public class WaveManager {
 
     void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm) {
         WAVELOG.log(Level.INFO, "Process datamessage");
+        if (ssdm.getProfileKey().isPresent()) {
+            System.err.println("I NEED TO HANDLE A PROFILE with key ");
+           // handleProfileKey(ssdm);
+        }
         Message msg = new Message();
         Optional<List<SignalServiceAttachment>> attachmentsOpt = ssdm.getAttachments();
         if (attachmentsOpt.isPresent()) {
@@ -994,6 +1036,12 @@ public class WaveManager {
                 this.messageListener.gotMessage(uuid, content, ssdm.getTimestamp(), recuuid);
             }
         }
+    }
+
+    private void processSenderKeyDistributionMessage(SignalServiceAddress senderAddress, int deviceId, SenderKeyDistributionMessage msg) {
+        SignalProtocolAddress addy = new SignalProtocolAddress(senderAddress.getIdentifier(), deviceId);
+        System.err.println("WM process senderkeydistributionmessage for addy = "+addy+", senderadd = "+senderAddress+", sai = "+senderAddress.getIdentifier()+", devid = "+deviceId);
+        sender.processSenderKeyDistributionMessage(addy, msg);
     }
 
     private static CertificateValidator getCertificateValidator() {
@@ -1114,14 +1162,6 @@ public class WaveManager {
         if (Files.exists(path)) {
             String line = Files.readString(path);
             answer = Contact.fromJson(line);
-//            List<String> lines = Files.readAllLines(path);
-//            
-//            for (int i = 0; i < lines.size(); i = i + 4) {
-//                Contact c = new Contact(lines.get(i), lines.get(i + 1), lines.get(i + 2));
-//                String avt = lines.get(i + 3);
-//                c.setAvatarPath(avt);
-//                answer.add(c);
-//            }
         }
         System.err.println("WM did read: "+answer+"\n with "+answer.size()+" elements");
         return answer;
@@ -1138,51 +1178,75 @@ public class WaveManager {
         Files.writeString(path, json, StandardOpenOption.CREATE);
         contactStorageDirty = true;
     }
+    
+    private List<Group> readGroups() throws IOException {
+        System.err.println("[WM] READGROUPS");
+        List<Group> answer = new LinkedList<>();
+        Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("grouplist");
+        if (Files.exists(path)) {
+            String line = Files.readString(path);
+            answer = Group.fromJson(line);
+        }
+        System.err.println("WM did read: "+answer+"\n with "+answer.size()+" elements");
+        return answer;
+    }
+    
+    private void storeGroups() throws IOException {
+        WAVELOG.log(Level.INFO, "store groups");
+        Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("grouplist");
+        if (!Files.exists(path.getParent())) {
+            Files.createDirectories(path.getParent());
+        }
+        Files.deleteIfExists(path);
+        String json = Group.toJson(groups);
+        Files.writeString(path, json, StandardOpenOption.CREATE);
+        groupStorageDirty = true;
+    }
 
     // This seems to return groupv1 groups only, hence not used atm
-    private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
-        System.err.println("Processing groupsMessage, pointer? "+ssa.isPointer()
-        +", stream? "+ssa.isStream());
-        SignalServiceAttachmentPointer pointer = ssa.asPointer();
-        Path output = Files.createTempFile("pre", "post");
-            Path mattPath = Files.createTempFile("r", "bin");
-
-        try {
-            InputStream is = receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
-            File attFile = mattPath.toFile();
-            Files.copy(is, mattPath, StandardCopyOption.REPLACE_EXISTING);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            throw new IOException("Can't retrieve attachment", ex);
-        }
-        System.err.println("MATTPATH = "+mattPath+", OUT = "+output);
-        try {
-            byte[] digest = pointer.getDigest().get();
-            InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
-                      
-            Path attPath = Files.createTempFile("agg", "bin");
-            File attFile = attPath.toFile();
-            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
-
-            InputStream ois = new FileInputStream(attFile);
-            DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
-            DeviceGroup dg = is.read();
-            groups.clear();
-//            while (dg != null) {
-//                try {
-//                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
-//                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and mkb "+Arrays.asList(g.getMasterKeyBytes()));
-//                groups.add(g);
-//                } catch (Exception e) {
-//                    e.printStackTrace();
-//                }
-//                dg = is.read();
-//            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-            
-    }
+//    private void processGroupsMessage(SignalServiceAttachment ssa) throws IOException {
+//        System.err.println("Processing groupsMessage, pointer? "+ssa.isPointer()
+//        +", stream? "+ssa.isStream());
+//        SignalServiceAttachmentPointer pointer = ssa.asPointer();
+//        Path output = Files.createTempFile("pre", "post");
+//            Path mattPath = Files.createTempFile("r", "bin");
+//
+//        try {
+//            InputStream is = receiver.retrieveAttachment(pointer, output.toFile(), MAX_FILE_STORAGE);
+//            File attFile = mattPath.toFile();
+//            Files.copy(is, mattPath, StandardCopyOption.REPLACE_EXISTING);
+//        } catch (Exception ex) {
+//            ex.printStackTrace();
+//            throw new IOException("Can't retrieve attachment", ex);
+//        }
+//        System.err.println("MATTPATH = "+mattPath+", OUT = "+output);
+//        try {
+//            byte[] digest = pointer.getDigest().get();
+//            InputStream ais = AttachmentCipherInputStream.createForAttachment(output.toFile(), pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
+//                      
+//            Path attPath = Files.createTempFile("agg", "bin");
+//            File attFile = attPath.toFile();
+//            Files.copy(ais, attPath, StandardCopyOption.REPLACE_EXISTING);
+//
+//            InputStream ois = new FileInputStream(attFile);
+//            DeviceGroupsInputStream is = new DeviceGroupsInputStream(ois);
+//            DeviceGroup dg = is.read();
+//            groups.clear();
+////            while (dg != null) {
+////                try {
+////                Group g = new Group(dg.getName().orElse("anonymous group"), dg.getId(), dg.getMembers());
+////                System.err.println("Adding group with name "+g.getName()+" and members "+g.getMembers()+" and mkb "+Arrays.asList(g.getMasterKeyBytes()));
+////                groups.add(g);
+////                } catch (Exception e) {
+////                    e.printStackTrace();
+////                }
+////                dg = is.read();
+////            }
+//        } catch (Exception e) {
+//            e.printStackTrace();
+//        }
+//            
+//    }
 
     private void processKeysMessage(KeysMessage keysMessage) {
         this.storageKey = keysMessage.getStorageService().get();
@@ -1226,11 +1290,21 @@ public class WaveManager {
                         memberList.add(add);
                     }
                     Group group = new Group(title, groupMasterKey, memberList);
-                    groups.add(group);
-                    groupMap.put(title, group);
+                    Optional<Group> exists = groups.stream().filter(g -> 
+                            Arrays.equals(g.getMasterKey().serialize(), group.getMasterKey().serialize()))
+                            .findFirst();
+                    if (exists.isPresent()) {
+                        System.err.println("GROUP "+title+" exists!");
+                        exists.get().update(group);
+                    } else {
+                        System.err.println("GROUP "+title+" is new!");
+                        groups.add(group);
+                        groupMap.put(title, group);
+                    }
 
                 }
             }
+            storeGroups();
         } catch (IOException ex) {
             ex.printStackTrace();
         } catch (InvalidKeyException ex) {

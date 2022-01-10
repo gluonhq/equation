@@ -24,6 +24,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Logger;
@@ -52,6 +53,7 @@ public class WaveStore implements SignalServiceProtocolStore {
     private IdentityKeyPair identityKeyPair;
     Map<Integer, PreKeyRecord> map = new HashMap<>();
     Map<Integer, SignedPreKeyRecord> signedMap = new HashMap<>();
+    Map<MySenderKey, SenderKeyRecord> senderKeyMap = new HashMap<>();
 
     private StaticCredentialsProvider credentialsProvider;
 
@@ -104,6 +106,7 @@ public class WaveStore implements SignalServiceProtocolStore {
                 retrieveSignedPreKeys();
                 retrievePreKeys();
                 retrieveSessions();
+                retrieveSenderKeys();
             } catch (IOException ex) {
                 ex.printStackTrace();
             }
@@ -197,6 +200,11 @@ public class WaveStore implements SignalServiceProtocolStore {
     @Override
     public void removePreKey(int i) {
         map.remove(i);
+        try {
+            deletePreKey(i);
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
     }
 
     @Override
@@ -225,6 +233,7 @@ public class WaveStore implements SignalServiceProtocolStore {
     @Override
     public void removeSignedPreKey(int i) {
         signedMap.remove(i);
+        persistSignedPreKeys();
     }
 
     @Override
@@ -407,6 +416,11 @@ public class WaveStore implements SignalServiceProtocolStore {
         }
         Files.write(path, pkr.serialize());
     }
+    
+    private void deletePreKey(int i) throws IOException {
+        Path ppath = SIGNAL_FX_STORE_PATH.resolve("prekeys").resolve(Integer.toString(i));
+        Files.delete(ppath);
+    }
 
     private boolean retrievePreKeys() throws IOException {
         Path ppath = SIGNAL_FX_STORE_PATH.resolve("prekeys");
@@ -452,6 +466,67 @@ public class WaveStore implements SignalServiceProtocolStore {
 
     }
 
+    private void persistSenderKeys() {
+        Path path = SIGNAL_FX_STORE_PATH.resolve("senderkeys");
+        File f = path.toFile();
+        if (f.exists()) {
+            f.delete();
+        }
+        List<String> lines = new LinkedList<>();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream daos = new DataOutputStream(baos);
+        try {
+            daos.write(senderKeyMap.size());
+            Set<Entry<MySenderKey, SenderKeyRecord>> entrySet = senderKeyMap.entrySet();
+            for (Entry<MySenderKey, SenderKeyRecord> entry : entrySet) {
+                MySenderKey key = entry.getKey();
+                String serkey = key.sender.getName() + ":" + key.sender.getDeviceId() + ":" + key.distributionId.toString();
+                byte[] value = entry.getValue().serialize();
+                daos.writeUTF(serkey);
+                daos.writeInt(value.length);
+                daos.write(value);
+            }
+            daos.flush();
+            Files.write(path, baos.toByteArray());
+            System.err.println("Wrote senderkeys with "+senderKeyMap.size() + " items");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private boolean retrieveSenderKeys() throws IOException {
+        System.err.println("Retrieve SenderKeys from storage");
+        Path path = SIGNAL_FX_STORE_PATH.resolve("senderkeys");
+        if (!Files.exists(path)) {
+            System.err.println("No sender keys found.");
+            return true;
+        }
+        byte[] b = Files.readAllBytes(path);
+        ByteArrayInputStream bais = new ByteArrayInputStream(b);
+        DataInputStream dis = new DataInputStream(bais);
+        int entriesSize = dis.readInt();
+        System.err.println("SenderKeyStore has " + entriesSize+" entries.");
+        senderKeyMap.clear();
+        for (int i = 0; i < entriesSize; i++) {
+            String key = dis.readUTF();
+            System.err.println("SENDERKEY = "+key);
+            String[] keyParts = key.split(":");
+            String keyName = keyParts[0];
+            int deviceId = Integer.parseInt(keyParts[1]);
+            String distId = keyParts[2];
+            MySenderKey sk = new MySenderKey(new SignalProtocolAddress(keyName, deviceId), UUID.fromString(distId));
+
+             int bs = dis.readInt();
+            byte[] spkrb = new byte[bs];
+            int read = dis.read(spkrb);
+            if (read != bs) {
+                throw new RuntimeException("signed prekeys tampered with!");
+            }
+            SenderKeyRecord skr = new SenderKeyRecord(spkrb);
+        }
+        return true;
+    }
+    
     private boolean retrieveSignedPreKeys() throws IOException {
         Path path = SIGNAL_FX_STORE_PATH.resolve("signedprekeys");
         byte[] b = Files.readAllBytes(path);
@@ -530,13 +605,74 @@ public class WaveStore implements SignalServiceProtocolStore {
     }
 
     @Override
-    public void storeSenderKey(SenderKeyName senderKeyName, SenderKeyRecord record) {
+    public void storeSenderKey(SignalProtocolAddress sender, UUID distributionId, SenderKeyRecord record) {
+        MySenderKey msk = new MySenderKey(sender, distributionId);
+        senderKeyMap.put(msk, record);
+        System.err.println("stored sender, keymap = "+senderKeyMap);
+        persistSenderKeys();
+    }
+
+    @Override
+    public SenderKeyRecord loadSenderKey(SignalProtocolAddress sender, UUID distributionId) {
+        System.err.println("LSK asked for sender = "+sender);
+        System.err.println("senderdvid = "+sender.getDeviceId());
+        MySenderKey msk = new MySenderKey(sender, distributionId);
+        SenderKeyRecord answer = senderKeyMap.get(msk);
+        System.err.println("got answer "+answer+", keymap = "+senderKeyMap);
+
+        if (answer == null) answer = new SenderKeyRecord();
+        return answer;
+    }
+
+    @Override
+    public boolean isMultiDevice() {
         throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
     }
 
     @Override
-    public SenderKeyRecord loadSenderKey(SenderKeyName senderKeyName) {
+    public Transaction beginTransaction() {
         throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
     }
 
+    static class MySenderKey {
+
+        private final SignalProtocolAddress sender;
+        private final UUID distributionId;
+        
+        MySenderKey(SignalProtocolAddress sender, UUID distributionId) {
+            this.sender = sender;
+            this.distributionId = distributionId;
+        }
+
+        @Override
+        public int hashCode() {
+            int hash = 7;
+            hash = 11 * hash + this.sender.hashCode();
+            hash = 11 * hash + this.distributionId.hashCode();
+            return hash;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (obj == null) {
+                return false;
+            }
+            if (getClass() != obj.getClass()) {
+                return false;
+            }
+            final MySenderKey other = (MySenderKey) obj;
+            if (!Objects.equals(this.sender, other.sender)) {
+                return false;
+            }
+            if (!Objects.equals(this.distributionId, other.distributionId)) {
+                return false;
+            }
+            return true;
+        }
+        
+    }
+   
 }
