@@ -488,6 +488,7 @@ public class WaveStore implements SignalServiceProtocolStore {
             }
             daos.flush();
             Files.write(path, baos.toByteArray());
+            System.err.println("Wrote senderkeys with "+senderKeyMap.size() + " items");
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -504,6 +505,7 @@ public class WaveStore implements SignalServiceProtocolStore {
         ByteArrayInputStream bais = new ByteArrayInputStream(b);
         DataInputStream dis = new DataInputStream(bais);
         int entriesSize = dis.readInt();
+        System.err.println("SenderKeyStore has " + entriesSize+" entries.");
         senderKeyMap.clear();
         for (int i = 0; i < entriesSize; i++) {
             String key = dis.readUTF();

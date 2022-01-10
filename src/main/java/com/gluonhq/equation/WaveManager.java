@@ -339,8 +339,7 @@ public class WaveManager {
     public void syncEverything() throws IOException {
         WAVELOG.log(Level.INFO, "[WM] startSyncEverything");
         syncConfiguration();
-        syncContacts();
-     //  syncGroups();
+    //    syncContacts();
         WAVELOG.log(Level.INFO, "[WM] doneSyncEverything");
     }
     
@@ -450,6 +449,9 @@ public class WaveManager {
             try {
                 groups.clear(); // TODO make this smarter
                 groups.addAll(readGroups());
+                for (Group g : groups) {
+                    groupMap.put(g.getName(), g);
+                }
                 groupStorageDirty = false;
             } catch (IOException ex) {
                 ex.printStackTrace();
@@ -516,11 +518,6 @@ public class WaveManager {
             ua.add(Optional.empty());
         }
         System.err.println("Sending to "+recipients+" and ua size = "+ua.size());
-        try {
-            Thread.sleep(3000);
-        } catch (InterruptedException ex) {
-            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
-        }
         try {
             List<SendMessageResult> res = sender.sendMessage(recipients,ua, false, message);
             for (SendMessageResult smr :  res) {
