@@ -67,36 +67,14 @@ public class WaveStore implements SignalServiceProtocolStore {
     private int deviceId;
     private String myUuid = "nobody";
 
-    private final static String SIGNAL_FX;
-    public final static Path SIGNAL_FX_PATH;
-    public final static Path SIGNAL_FX_STORE_PATH;
-    private final static File SIGNAL_FX_DIR;
-    public final static File SIGNAL_FX_CONTACTS_DIR;
-
-    static {
-        SIGNAL_FX = System.getProperty("user.home")
-                + File.separator + ".signalfx";
-        SIGNAL_FX_DIR = new File(SIGNAL_FX);
-        SIGNAL_FX_DIR.mkdirs();
-        SIGNAL_FX_PATH = SIGNAL_FX_DIR.toPath();
-        SIGNAL_FX_STORE_PATH = SIGNAL_FX_PATH.resolve("store");
-        Path contacts = SIGNAL_FX_DIR.toPath().resolve("contacts/");
-        SIGNAL_FX_CONTACTS_DIR = contacts.toFile();
-        try {
-            Files.createDirectories(SIGNAL_FX_STORE_PATH);
-            Files.createDirectories(contacts);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
-    }
-
-    public static WaveStore instance = new WaveStore();
-
-    public static WaveStore getInstance() {
-        return instance;
-    }
-
-    private WaveStore() {
+    private String SIGNAL_FX;
+    public Path SIGNAL_FX_PATH;
+    public Path SIGNAL_FX_STORE_PATH;
+    private File SIGNAL_FX_DIR;
+    public File SIGNAL_FX_CONTACTS_DIR;
+    
+    public WaveStore() {
+        preparePaths();
         // if we have a credentialsprovider, we assume we are initialized, and
         // the other stored info is retrieved.
         this.initialized = retrieveCredentialsProvider();
@@ -121,6 +99,15 @@ public class WaveStore implements SignalServiceProtocolStore {
      */
     public boolean isInitialized() {
         return initialized;
+    }
+
+    /**
+     * Moves the existing directory with configuration and store to a new directory.
+     */
+    public void moveOldStore() throws IOException {
+        Path backup = SIGNAL_FX_PATH.resolveSibling(".signalfx1");
+        deleteDirectoryIfExists(backup);
+        Files.move(SIGNAL_FX_PATH, backup);
     }
 
     public void setIdentityKeyPair(IdentityKeyPair ikp) {
@@ -672,7 +659,36 @@ public class WaveStore implements SignalServiceProtocolStore {
             }
             return true;
         }
-        
     }
-   
+
+    boolean deleteDirectoryIfExists(Path target) throws IOException {
+        if ((target == null) || !Files.exists(target)) {
+            System.err.println("didn't exist");
+            return false;
+        }
+        File[] children = target.toFile().listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteDirectoryIfExists(child.toPath());
+            }
+        }
+        return Files.deleteIfExists(target);
+    }
+    
+    private void preparePaths() {
+        SIGNAL_FX = System.getProperty("user.home")
+                + File.separator + ".signalfx";
+        SIGNAL_FX_DIR = new File(SIGNAL_FX);
+        SIGNAL_FX_DIR.mkdirs();
+        SIGNAL_FX_PATH = SIGNAL_FX_DIR.toPath();
+        SIGNAL_FX_STORE_PATH = SIGNAL_FX_PATH.resolve("store");
+        Path contacts = SIGNAL_FX_DIR.toPath().resolve("contacts/");
+        SIGNAL_FX_CONTACTS_DIR = contacts.toFile();
+        try {
+            Files.createDirectories(SIGNAL_FX_STORE_PATH);
+            Files.createDirectories(contacts);
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
 }

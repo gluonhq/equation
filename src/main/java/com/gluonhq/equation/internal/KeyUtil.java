@@ -23,9 +23,14 @@ import org.whispersystems.libsignal.util.Medium;
  */
 public class KeyUtil {
 
+    private final WaveManager waveManager;
+
+    public KeyUtil (WaveManager manager) {
+        this.waveManager = manager;
+    }
     // TODO inject waveStore
-    public synchronized static List<PreKeyRecord> generatePreKeys(int cnt) {
-        WaveStore waveStore = WaveManager.getInstance().getWaveStore();
+    public synchronized List<PreKeyRecord> generatePreKeys(int cnt) {
+        WaveStore waveStore = waveManager.getWaveStore();
         List<PreKeyRecord> records = new LinkedList<>();
         int preKeyIdOffset = 1; // TODO 
 
@@ -55,9 +60,9 @@ public class KeyUtil {
         activeSignedPreKeyId = v;
     }
 
-    public synchronized static SignedPreKeyRecord generateSignedPreKey(IdentityKeyPair identityKeyPair, boolean active) {
+    public synchronized SignedPreKeyRecord generateSignedPreKey(IdentityKeyPair identityKeyPair, boolean active) {
         try {
-            WaveStore waveStore = WaveManager.getInstance().getWaveStore();
+            WaveStore waveStore = waveManager.getWaveStore();
             int signedPreKeyId = getNextSignedPreKeyId();
             ECKeyPair keyPair = Curve.generateKeyPair();
             byte[] signature = Curve.calculateSignature(identityKeyPair.getPrivateKey(), keyPair.getPublicKey().serialize());

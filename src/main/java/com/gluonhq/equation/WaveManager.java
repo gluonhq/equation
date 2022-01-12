@@ -42,6 +42,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 import javafx.beans.InvalidationListener;
 import javafx.beans.Observable;
@@ -133,8 +134,8 @@ import org.whispersystems.util.Base64;
  */
 public class WaveManager {
 
-    private static final WaveManager instance = new WaveManager();
-    private final WaveStore waveStore;
+  //  private static final WaveManager instance = new WaveManager();
+    private WaveStore waveStore;
     private CredentialsProvider credentialsProvider;
     private ClientConnectivityListener cl;
 
@@ -152,9 +153,9 @@ public class WaveManager {
     
     private final Map<String, Group> groupMap = new HashMap<>();
 
-    final SignalServiceConfiguration signalServiceConfiguration;
+    SignalServiceConfiguration signalServiceConfiguration;
 
-    public final static File SIGNAL_FX_CONTACTS_DIR;
+    public File SIGNAL_FX_CONTACTS_DIR;
     
     private CountDownLatch syncContactsLatch;
     
@@ -169,18 +170,9 @@ public class WaveManager {
     static {
         Security.addProvider(new BouncyCastleProvider());
         Security.setProperty("crypto.policy", "unlimited");
-        Path contacts = WaveStore.SIGNAL_FX_PATH.resolve("contacts/");
-        SIGNAL_FX_CONTACTS_DIR = contacts.toFile();
-        try {
-            Files.createDirectories(contacts);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+       
     }
     
-    public static WaveManager getInstance() {
-        return instance;
-    }
     private MessagingClient messageListener;
     
     private boolean connected;
@@ -196,12 +188,30 @@ public class WaveManager {
     public static WaveLogger WAVELOG;
     private AccountManager accountManager;
     HashMap<Integer, AuthCredentialResponse> groupCredentials;
+    private Supplier<Boolean> fatalErrorSupplier;
+    private Consumer<String> restartRequestConsumer;
 
-    private WaveManager() {
+    public WaveManager() { 
         WAVELOG = new WaveLogger();
         WAVELOG.log(Level.INFO, "Starting WaveManager");
+        this.waveStore = new WaveStore();
+        Path contacts = waveStore.SIGNAL_FX_PATH.resolve("contacts/");
+        SIGNAL_FX_CONTACTS_DIR = contacts.toFile();
+        try {
+            Files.createDirectories(contacts);
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
         this.lock = new LockImpl();
-        this.waveStore = WaveStore.getInstance();
+        postInit();
+    }
+    
+    /**
+     * This method is invoked by the constructor and after a reset of the
+     * configuration/storage directory happened.
+     */
+    private void postInit() {
+        this.waveStore = new WaveStore();
         this.signalServiceConfiguration = createConfiguration();
         this.credentialsProvider = waveStore.getCredentialsProvider();
         if (isProvisioned()) {
@@ -218,7 +228,7 @@ public class WaveManager {
     public WaveLogger getWaveLogger() {
         return WAVELOG;
     }
-    
+
     /**
      * Changes the level for the underlying loggers
      * @param level the minimum level a log message should have in order to be logged.
@@ -339,7 +349,7 @@ public class WaveManager {
     public void syncEverything() throws IOException {
         WAVELOG.log(Level.INFO, "[WM] startSyncEverything");
         syncConfiguration();
-    //    syncContacts();
+        syncContacts();
         WAVELOG.log(Level.INFO, "[WM] doneSyncEverything");
     }
     
@@ -368,22 +378,6 @@ public class WaveManager {
         SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
         sendSyncMessage(message);
         this.lastSyncContactRequest.set(System.currentTimeMillis());
-        // not used yet
-        Thread t = new Thread() {
-            @Override public void run() {
-                try {
-                    boolean res = syncContactsLatch.await(10, TimeUnit.SECONDS);
-                    if (res) {
-                        WAVELOG.log(Level.INFO, "Ok, we got contacts");
-                    } else {
-                        reset();
-                        
-                    }
-                } catch (InterruptedException ex) {
-                    ex.printStackTrace();
-                }
-            }
-        };
     }
 
     public void syncConfiguration() throws IOException {
@@ -407,6 +401,15 @@ public class WaveManager {
         RequestMessage requestMessage = new RequestMessage(request);
         SignalServiceSyncMessage message = SignalServiceSyncMessage.forRequest(requestMessage);
         sendSyncMessage(message);
+    }
+
+    // TODO: the following callback methods could be on an interface
+    public void setOnFatalError(Supplier<Boolean> sup) {
+        this.fatalErrorSupplier = sup;
+    }
+    
+    public void setOnRestartRequest(Consumer<String> p) {
+        this.restartRequestConsumer = p;
     }
 
     private void sendSyncMessage(SignalServiceSyncMessage message) throws IOException {
@@ -623,11 +626,12 @@ public class WaveManager {
     // PRIVATE 
     
     private void generateAndRegisterKeys() throws IOException {
+        KeyUtil keyUtil = new KeyUtil(this);
         IdentityKeyPair identityKeypair = getWaveStore().getIdentityKeyPair();
-        SignedPreKeyRecord signedPreKey = KeyUtil.generateSignedPreKey(identityKeypair, true);
+        SignedPreKeyRecord signedPreKey = keyUtil.generateSignedPreKey(identityKeypair, true);
         waveStore.storeSignedPreKey(2, signedPreKey);
   
-        List<PreKeyRecord> records = KeyUtil.generatePreKeys(100);
+        List<PreKeyRecord> records = keyUtil.generatePreKeys(100);
         WAVELOG.log(Level.DEBUG," PM will register keys, ik = "+ identityKeypair+" with pubkey = "+identityKeypair.getPublicKey()+" and spk = "+signedPreKey+" and records = "+records);
         String response = accountManager.setPreKeys(identityKeypair.getPublicKey(), signedPreKey, records);
         WAVELOG.log(Level.DEBUG,"Response for generateAndRegisterKeys = "+response);
@@ -716,7 +720,7 @@ public class WaveManager {
                 cl,
                 sleepTimer,
                 null,
-                true);
+                false);
         return answer;
     }
 
@@ -1322,6 +1326,24 @@ ex.printStackTrace();
         return answer;
     }
 
+    private void fatalError(String authError) {
+        Thread.dumpStack();
+        if (this.fatalErrorSupplier != null) {
+            if (fatalErrorSupplier.get()) {
+                System.err.println("LETS REMOVE THIS!");
+                try {
+                    waveStore.moveOldStore();
+                    postInit();
+                    restartRequestConsumer.accept("Configuration moved");
+                } catch (IOException ex) {
+                    ex.printStackTrace();
+                }
+            } else {
+                System.err.println("LETS KEEP THIS!");
+            }
+        }
+    }
+
 
     class ClientConnectivityListener implements ConnectivityListener {
 
@@ -1336,11 +1358,6 @@ ex.printStackTrace();
          */
         public void waitConnected(int ms) throws InterruptedException, IOException {
             System.err.println("[WC] " + System.currentTimeMillis()+" Waiting "+ms+" ms to be connected...");
-//            connectedLatch.await(ms, TimeUnit.MILLISECONDS);
-//            System.err.println("[WC] " + System.currentTimeMillis()+" Waited "+ms+" ms to be connected...");
-//
-//            if (connectedLatch.getCount() > 0) throw new IOException("Failed to"
-//                    + "connect!");
         }
         
         @Override
@@ -1360,7 +1377,9 @@ ex.printStackTrace();
 
         @Override
         public void onAuthenticationFailure() {
-            throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+            WaveManager.this.messagePipe.shutdown();
+            WaveManager.this.unidentifiedMessagePipe.shutdown();
+            WaveManager.this.fatalError("AuthError");
         }
 
         @Override
