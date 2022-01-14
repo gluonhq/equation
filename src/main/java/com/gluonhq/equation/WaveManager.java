@@ -129,15 +129,10 @@ import org.whispersystems.signalservice.internal.websocket.WebSocketProtos.WebSo
 import org.whispersystems.util.Base64;
 
 /**
- * The entry point to Gluon Wave. There is only a single WaveManager in any
- * running VM.
+ * The entry point to Gluon Wave. 
  */
 public class WaveManager {
 
-  //  private static final WaveManager instance = new WaveManager();
-    private WaveStore waveStore;
-    private CredentialsProvider credentialsProvider;
-    private ClientConnectivityListener cl;
 
     static final String SIGNAL_SERVICE_URL = "https://textsecure-service.whispersystems.org";
     static final String SIGNAL_USER_AGENT = "Signal-Desktop/5.14.0 Linux";
@@ -145,6 +140,23 @@ public class WaveManager {
     static final String SIGNAL_STORAGE_URL = "https://storage.signal.org";
     static final String UNIDENTIFIED_SENDER_TRUST_ROOT = "BXu6QIKVz5MA8gstzfOgRQGqyLqOwNKHL6INkv3IHWMF";
     static final String ZKGROUP_SERVER_PUBLIC_PARAMS = "AMhf5ywVwITZMsff/eCyudZx9JDmkkkbV6PInzG4p8x3VqVJSFiMvnvlEKWuRob/1eaIetR31IYeAbm0NdOuHH8Qi+Rexi1wLlpzIo1gstHWBfZzy1+qHRV5A4TqPp15YzBPm0WSggW6PbSn+F4lf57VCnHF7p8SvzAA2ZZJPYJURt8X7bbg+H3i+PEjH9DXItNEqs2sNcug37xZQDLm7X36nOoGPs54XsEGzPdEV+itQNGUFEjY6X9Uv+Acuks7NpyGvCoKxGwgKgE5XyJ+nNKlyHHOLb6N1NuHyBrZrgtY";
+    public static WaveLogger WAVELOG;
+    static {
+        Security.addProvider(new BouncyCastleProvider());
+        Security.setProperty("crypto.policy", "unlimited");
+        
+    }
+    private static CertificateValidator getCertificateValidator() {
+        try {
+            ECPublicKey unidentifiedSenderTrustRoot = Curve.decodePoint(Base64.decode(UNIDENTIFIED_SENDER_TRUST_ROOT), 0);
+            return new CertificateValidator(unidentifiedSenderTrustRoot);
+        } catch (InvalidKeyException | IOException e) {
+            throw new RuntimeException ("Error creating certificateValidator", e);
+        }
+    }
+    private WaveStore waveStore;
+    private CredentialsProvider credentialsProvider;
+    private ClientConnectivityListener cl;
     long MAX_FILE_STORAGE = 1024 * 1024 * 4;
     final TrustStore trustStore = new TrustStoreImpl();
     private final LockImpl lock;
@@ -167,11 +179,6 @@ public class WaveManager {
     private boolean firstRun = false;
     StorageKey storageKey = null;
 
-    static {
-        Security.addProvider(new BouncyCastleProvider());
-        Security.setProperty("crypto.policy", "unlimited");
-       
-    }
     
     private MessagingClient messageListener;
     
@@ -185,7 +192,6 @@ public class WaveManager {
     private boolean contactStorageDirty = true;
     private boolean groupStorageDirty = true;
     private ProvisioningManager provisioningManager;
-    public static WaveLogger WAVELOG;
     private AccountManager accountManager;
     HashMap<Integer, AuthCredentialResponse> groupCredentials;
     private Supplier<Boolean> fatalErrorSupplier;
@@ -1048,14 +1054,6 @@ public class WaveManager {
         sender.processSenderKeyDistributionMessage(addy, msg);
     }
 
-    private static CertificateValidator getCertificateValidator() {
-        try {
-            ECPublicKey unidentifiedSenderTrustRoot = Curve.decodePoint(Base64.decode(UNIDENTIFIED_SENDER_TRUST_ROOT), 0);
-            return new CertificateValidator(unidentifiedSenderTrustRoot);
-        } catch (InvalidKeyException | IOException e) {
-            throw new RuntimeException ("Error creating certificateValidator", e);
-        }
-    }
     
     private Optional<Contact> getContactByNumber(String number) {
         FilteredList<Contact> filtered = contacts.filtered(c -> number.equals(c.getNr()));
