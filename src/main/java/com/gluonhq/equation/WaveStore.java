@@ -74,6 +74,7 @@ public class WaveStore implements SignalServiceProtocolStore {
     public File SIGNAL_FX_CONTACTS_DIR;
     
     public WaveStore() {
+        System.err.println("Create WaveStore at "+this);
         preparePaths();
         // if we have a credentialsprovider, we assume we are initialized, and
         // the other stored info is retrieved.
@@ -463,7 +464,7 @@ public class WaveStore implements SignalServiceProtocolStore {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         DataOutputStream daos = new DataOutputStream(baos);
         try {
-            daos.write(senderKeyMap.size());
+            daos.writeInt(senderKeyMap.size());
             Set<Entry<MySenderKey, SenderKeyRecord>> entrySet = senderKeyMap.entrySet();
             for (Entry<MySenderKey, SenderKeyRecord> entry : entrySet) {
                 MySenderKey key = entry.getKey();
@@ -510,7 +511,9 @@ public class WaveStore implements SignalServiceProtocolStore {
                 throw new RuntimeException("signed prekeys tampered with!");
             }
             SenderKeyRecord skr = new SenderKeyRecord(spkrb);
+            senderKeyMap.put(sk, skr);
         }
+        System.err.println("SenderKeyMap retrieved: "+senderKeyMap);
         return true;
     }
     
