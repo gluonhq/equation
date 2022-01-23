@@ -25,9 +25,9 @@ import org.whispersystems.signalservice.internal.push.PushServiceSocket;
 import org.whispersystems.signalservice.internal.push.RemoteConfigResponse;
 
 /**
- * This class contains functionality that is also on the same class in the AccountManager
- * in the Android implementation.
- * 
+ * This class contains functionality that is also on the same class in the
+ * AccountManager in the Android implementation.
+ *
  * @author johan
  */
 public class AccountManager {
@@ -37,11 +37,11 @@ public class AccountManager {
     private final GroupsV2Operations groupsV2Operations;
     SignalServiceAccountManager ssam;
 
-    public AccountManager(SignalServiceConfiguration config, 
+    public AccountManager(SignalServiceConfiguration config,
             CredentialsProvider credentialsProvider) {
         this.groupsV2Operations = new GroupsV2Operations(ClientZkOperations.create(config));
         ssam = new SignalServiceAccountManager(config,
-        credentialsProvider, SIGNAL_USER_AGENT, groupsV2Operations, true);
+                credentialsProvider, SIGNAL_USER_AGENT, groupsV2Operations, true);
         socket = new PushServiceSocket(config, credentialsProvider, SIGNAL_USER_AGENT, null, true);
     }
 
@@ -51,12 +51,12 @@ public class AccountManager {
     }
 
     public GroupsV2Api getGroupsV2Api() {
-         return new GroupsV2Api(socket, groupsV2Operations);
+        return new GroupsV2Api(socket, groupsV2Operations);
     }
 
     public void getRemoteConfig() throws IOException {
         RemoteConfigResponse remoteConfig = this.socket.getRemoteConfig();
-        System.err.println("Got remoteconfig: "+remoteConfig);
+        System.err.println("Got remoteconfig: " + remoteConfig);
     }
 
     public Optional<SignalStorageManifest> getStorageManifest(StorageKey storageKey) throws IOException {
@@ -69,9 +69,20 @@ public class AccountManager {
             return Optional.empty();
         }
     }
-  public List<SignalStorageRecord> readStorageRecords(StorageKey storageKey, List<StorageId> storageKeys) throws IOException, InvalidKeyException {
-    return ssam.readStorageRecords(storageKey, storageKeys);
+
+    public List<SignalStorageRecord> readStorageRecords(StorageKey storageKey, List<StorageId> storageKeys) throws IOException, InvalidKeyException {
+        return ssam.readStorageRecords(storageKey, storageKeys);
+    }
+    
+    
+  public byte[] getSenderCertificate() throws IOException {
+    return this.socket.getSenderCertificate();
   }
+
+  public byte[] getSenderCertificateForPhoneNumberPrivacy() throws IOException {
+    return this.socket.getUuidOnlySenderCertificate();
+  }
+
 
 
     public PushServiceSocket getSocket() {

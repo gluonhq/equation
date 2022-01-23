@@ -11,7 +11,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.signal.zkgroup.InvalidInputException;
+import org.signal.zkgroup.groups.GroupIdentifier;
 import org.signal.zkgroup.groups.GroupMasterKey;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 
@@ -20,9 +23,33 @@ public class Group {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private String name;
+    
     @JsonIgnore
     private GroupMasterKey masterKey;
+    
+    @JsonIgnore
+    private GroupIdentifier groupIdentifier;
     private byte[] mkb;
+    private byte[] gib;
+    private String distributionName;
+    
+    public Group() {}
+
+    public GroupIdentifier getIdentifier() {
+        return groupIdentifier;
+    }
+
+    public void setIdentifier(GroupIdentifier identifier) {
+        this.groupIdentifier = identifier;
+    }
+
+    public String getDistributionName() {
+        return distributionName;
+    }
+
+    public void setDistributionName(String distributionName) {
+        this.distributionName = distributionName;
+    }
 
     public byte[] getMkb() {
         return mkb;
@@ -31,18 +58,24 @@ public class Group {
     public void setMkb(byte[] mkb) {
         this.mkb = mkb;
     }
+    
+    public byte[] getGib() {
+        return gib;
+    }
+
+    public void setGib(byte[] gib) {
+        this.gib = gib;
+    }
+    
     @JsonIgnore
     private List<SignalServiceAddress> members = new LinkedList<>();
     
-
-    public Group() {
-        
-    }
-    
-    public Group(String name, GroupMasterKey masterKey, List<SignalServiceAddress> members) {
+    public Group(String name, GroupMasterKey masterKey, GroupIdentifier identifier, List<SignalServiceAddress> members) {
         this.name = name;
         this.masterKey = masterKey;
+        this.groupIdentifier = identifier;
         this.mkb = masterKey.serialize();
+        this.gib = identifier.serialize();
         this.members = members;
     }
     
@@ -57,6 +90,17 @@ public class Group {
             ex.printStackTrace();
         }
         return masterKey;
+    }
+    
+    public GroupIdentifier getGroupIdentifier() {
+        if (groupIdentifier == null) {
+            try {
+                groupIdentifier = new GroupIdentifier(gib);
+            } catch (InvalidInputException ex) {
+                ex.printStackTrace();
+            }
+        }
+        return groupIdentifier;
     }
 
     public List<SignalServiceAddress> getMembers() {
