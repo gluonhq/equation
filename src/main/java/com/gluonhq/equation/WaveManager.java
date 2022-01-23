@@ -15,6 +15,7 @@ import com.gluonhq.equation.model.Group;
 import com.gluonhq.equation.model.Message;
 import com.gluonhq.equation.provision.ProvisioningClient;
 import com.gluonhq.equation.provision.ProvisioningManager;
+import com.gluonhq.equation.util.ChannelUtils;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -44,6 +45,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import javafx.beans.InvalidationListener;
 import javafx.beans.Observable;
 import javafx.beans.property.LongProperty;
@@ -57,16 +59,20 @@ import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.ProtocolInvalidMessageException;
 import org.signal.libsignal.metadata.ProtocolNoSessionException;
 import org.signal.libsignal.metadata.certificate.CertificateValidator;
+import org.signal.libsignal.metadata.certificate.InvalidCertificateException;
 import org.signal.storageservice.protos.groups.local.DecryptedGroup;
 import org.signal.storageservice.protos.groups.local.DecryptedMember;
+import org.signal.zkgroup.InvalidInputException;
 import org.signal.zkgroup.VerificationFailedException;
 import org.signal.zkgroup.auth.AuthCredentialResponse;
+import org.signal.zkgroup.groups.GroupIdentifier;
 import org.signal.zkgroup.groups.GroupMasterKey;
 import org.signal.zkgroup.groups.GroupSecretParams;
 import org.signal.zkgroup.profiles.ProfileKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
+import org.whispersystems.libsignal.NoSessionException;
 import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
@@ -76,6 +82,7 @@ import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.*;
 import org.whispersystems.signalservice.api.crypto.AttachmentCipherInputStream;
+import org.whispersystems.signalservice.api.crypto.ContentHint;
 import org.whispersystems.signalservice.api.crypto.ProfileCipher;
 import org.whispersystems.signalservice.api.crypto.SignalGroupSessionBuilder;
 import org.whispersystems.signalservice.api.crypto.SignalServiceCipher;
@@ -105,6 +112,7 @@ import org.whispersystems.signalservice.api.messages.multidevice.RequestMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SentTranscriptMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SignalServiceSyncMessage;
 import org.whispersystems.signalservice.api.profiles.SignalServiceProfile;
+import org.whispersystems.signalservice.api.push.DistributionId;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.api.push.TrustStore;
 import org.whispersystems.signalservice.api.storage.SignalGroupV2Record;
@@ -162,6 +170,8 @@ public class WaveManager {
     private final LockImpl lock;
     private final ObservableList<Contact> contacts = FXCollections.observableArrayList();
     private final ObservableList<Group> groups = FXCollections.observableArrayList();
+    
+    private Contact me;
     
     private final Map<String, Group> groupMap = new HashMap<>();
 
@@ -509,7 +519,7 @@ public class WaveManager {
         return message.getTimestamp();
     }
 
-    public long sendGroupMessage(String uuid, String text, List<Path> attachment) throws IOException {
+    public long sendGroupMessage(String uuid, String text, List<Path> attachment) throws IOException, InvalidCertificateException, InvalidInputException, UntrustedIdentityException, NoSessionException, InvalidKeyException {
         ensureConnected();
         System.err.println("SENDGROUPMESSAGE, uuid = "+uuid+" and gm = "+groupMap);
         Group mygroup = groupMap.get(uuid);
@@ -520,21 +530,50 @@ public class WaveManager {
                 .withAttachments(ssa)
                 .asGroupMessage(group)
                 .withBody(text).build();
-        System.err.println("Send group");
-        List<SignalServiceAddress> recipients = mygroup.getMembers();
-        List<Optional<UnidentifiedAccessPair>> ua = new LinkedList();
-        for (int i = 0; i < mygroup.getMembers().size(); i++) {
-            ua.add(Optional.empty());
+        System.err.println("Send group!!");
+        System.err.println("Members = "+ mygroup.getMembers());
+        List<SignalServiceAddress> recipients = mygroup.getMembers()
+                .stream().filter(a -> !(getMyUuid().equals(a.getUuid().get().toString())))
+                .collect(Collectors.toList());
+                        
+        System.err.println("recip = "+ recipients);
+        String distributionId = mygroup.getDistributionName();
+        if ((distributionId == null) || distributionId.isEmpty()) {
+            distributionId = UUID.randomUUID().toString();
+            mygroup.setDistributionName(distributionId);
+            storeGroups();
         }
-        System.err.println("Sending to "+recipients+" and ua size = "+ua.size());
-        try {
-            List<SendMessageResult> res = sender.sendMessage(recipients,ua, false, message);
-            for (SendMessageResult smr :  res) {
-                System.err.println("RESULT = "+smr);
-            }
-        } catch (UntrustedIdentityException ex) {
-            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        DistributionId distribution = DistributionId.from(distributionId);
+        List<UnidentifiedAccess> ua = new LinkedList();
+        for (SignalServiceAddress address : mygroup.getMembers()) {
+            System.err.println("addy = " + address);
+            contacts.stream()
+                    .filter(c -> !(c.getUuid().equals(getMyUuid())))
+                    .filter(c -> c.getUuid().equals(address.getUuid().get().toString()))
+                    .findFirst()
+                    .ifPresent(cnt -> {
+                        try {
+                            ua.add(ChannelUtils.getUnidentifiedAccess(cnt));
+                        } catch (InvalidCertificateException ex) {
+                            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+                        } catch (InvalidInputException ex) {
+                            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+                        }
+                    });
+
+       //     ua.add(ChannelUtils.getUnidentifiedAccess(them));
         }
+        sender.sendGroupDataMessage(distribution, recipients, ua, connected, ContentHint.DEFAULT, message, SignalServiceMessageSender.SenderKeyGroupEvents.EMPTY);
+
+//        System.err.println("Sending to "+recipients+" and ua size = "+ua.size());
+//        try {
+//            List<SendMessageResult> res = sender.sendMessage(recipients,ua, false, message);
+//            for (SendMessageResult smr :  res) {
+//                System.err.println("RESULT = "+smr);
+//            }
+//        } catch (UntrustedIdentityException ex) {
+//            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+//        }
 
         return 0;
     }
@@ -1009,6 +1048,7 @@ public class WaveManager {
                 }
             }
         }
+        
         Optional<SignalServiceGroupContext> groupContext = ssdm.getGroupContext();
         if (groupContext.isPresent()) {
             SignalServiceGroupContext groupCon = groupContext.get();
@@ -1132,6 +1172,11 @@ public class WaveManager {
                     Files.write(avatarPath, b, StandardOpenOption.CREATE);
                     contact.setAvatarPath(avatarPath.toAbsolutePath().toString());
                 }
+                System.err.println("contact uuid = "+contact.getUuid()+" and I am "+waveStore.getMyUuid());
+                if (contact.getUuid().equals(waveStore.getMyUuid())) {
+                    this.me = contact;
+                    ChannelUtils.setMe(contact);
+                }
                 if (!contacts.contains(contact)) {
                     System.err.println("New contact: "+contact.getName());
                     Optional<Contact> oldOne = getContactByUuid(contact.getUuid());
@@ -1253,6 +1298,12 @@ public class WaveManager {
     private void processKeysMessage(KeysMessage keysMessage) {
         this.storageKey = keysMessage.getStorageService().get();
         syncStorage();
+        try {
+            byte[] senderCertificate = this.accountManager.getSenderCertificate();
+            ChannelUtils.setSenderCertificate(senderCertificate);
+        } catch (IOException ex) {
+            Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
     }
 
     private void syncStorage() {
@@ -1281,17 +1332,18 @@ public class WaveManager {
                             days, groupSecretParams,groupCredentials.get(days));
                     DecryptedGroup dgroup = accountManager.getGroupsV2Api().getGroup(groupSecretParams, authorization);
                     String title = dgroup.getTitle();
+                    GroupIdentifier groupIdentifier = groupSecretParams.getPublicParams().getGroupIdentifier();
 
-                    System.err.println("GroupTitle = "+title);
+                    System.err.println("GroupTitle = "+title+", id = "+Arrays.toString(groupIdentifier.serialize()));
                     System.err.println("#members = "+  dgroup.getMembersCount());
                     System.err.println("members = "+dgroup.getMembersList());
-                   List<SignalServiceAddress> memberList = new LinkedList<>();
+                    List<SignalServiceAddress> memberList = new LinkedList<>();
                     for (DecryptedMember member:  dgroup.getMembersList()) {
                         UUID uuid = UuidUtil.fromByteString(member.getUuid());
                         SignalServiceAddress add = new SignalServiceAddress(Optional.of(uuid), Optional.empty());
                         memberList.add(add);
                     }
-                    Group group = new Group(title, groupMasterKey, memberList);
+                    Group group = new Group(title, groupMasterKey, groupIdentifier, memberList);
                     Optional<Group> exists = groups.stream().filter(g -> 
                             Arrays.equals(g.getMasterKey().serialize(), group.getMasterKey().serialize()))
                             .findFirst();
@@ -1303,7 +1355,6 @@ public class WaveManager {
                         groups.add(group);
                         groupMap.put(title, group);
                     }
-
                 }
             }
             storeGroups();

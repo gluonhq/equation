@@ -5,7 +5,10 @@
  */
 package com.gluonhq.equation;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import static com.gluonhq.equation.WaveManager.WAVELOG;
+import com.gluonhq.equation.model.Contact;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -20,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -28,10 +32,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import org.whispersystems.libsignal.IdentityKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidKeyIdException;
+import org.whispersystems.libsignal.NoSessionException;
 import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.groups.SenderKeyName;
 import org.whispersystems.libsignal.groups.state.SenderKeyRecord;
@@ -40,6 +46,7 @@ import org.whispersystems.libsignal.state.SessionRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.SignalServiceProtocolStore;
 import org.whispersystems.signalservice.api.push.DistributionId;
+import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.internal.util.StaticCredentialsProvider;
 
 /**
@@ -54,6 +61,7 @@ public class WaveStore implements SignalServiceProtocolStore {
     Map<Integer, PreKeyRecord> map = new HashMap<>();
     Map<Integer, SignedPreKeyRecord> signedMap = new HashMap<>();
     Map<MySenderKey, SenderKeyRecord> senderKeyMap = new HashMap<>();
+    Map<DistributionId, Set<SignalProtocolAddress>> senderKeyDistributions = new HashMap<>();
 
     private StaticCredentialsProvider credentialsProvider;
 
@@ -243,13 +251,17 @@ public class WaveStore implements SignalServiceProtocolStore {
 
     @Override
     public synchronized List<Integer> getSubDeviceSessions(String name) {
+        System.err.println("[WS] GetSubDeviceSessions asked for "+name+", deviceid = "+deviceId);
         List<Integer> deviceIds = new LinkedList<>();
         for (SignalProtocolAddress key : sessions.keySet()) {
+            System.err.println("Consider "+key.getName()+" and devid = "+key.getDeviceId());
             if (key.getName().equals(name)
-                    && !((key.getName().equals(myUuid)) && (key.getDeviceId() == deviceId))) {
+                    && !((key.getName().equals(myUuid)) && (key.getDeviceId() == deviceId))
+                    && !((!key.getName().equals(myUuid)) && (key.getDeviceId() == SignalServiceAddress.DEFAULT_DEVICE_ID))) {
                 deviceIds.add(key.getDeviceId());
             }
         }
+        System.err.println("[WS] return "+deviceIds);
         return deviceIds;
     }
 
@@ -576,27 +588,62 @@ public class WaveStore implements SignalServiceProtocolStore {
 
     @Override
     public Set<SignalProtocolAddress> getAllAddressesWithActiveSessions(List<String> addressNames) {
-        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        System.err.println("Need to get all SPA's for "+addressNames);
+        Set<SignalProtocolAddress> answer = sessions.keySet().stream()
+                .filter(spa -> addressNames.contains(spa.getName()))
+                .collect(Collectors.toSet());
+        System.err.println("Will return "+answer);
+        return answer;
     }
 
     @Override
     public Set<SignalProtocolAddress> getSenderKeySharedWith(DistributionId distributionId) {
-        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        System.err.println("GSKSW for "+distributionId);
+        try {
+            readDistributionKeys();
+        } catch (IOException ex) {
+            Logger.getLogger(WaveStore.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
+        Set<SignalProtocolAddress> answer = senderKeyDistributions.get(distributionId);
+        System.err.println("answer = "+answer);
+        if (answer == null) answer = Set.of();
+        return answer;
     }
 
     @Override
     public void markSenderKeySharedWith(DistributionId distributionId, Collection<SignalProtocolAddress> addresses) {
-        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        Set<SignalProtocolAddress> answer = senderKeyDistributions.get(distributionId);
+        System.err.println("[WS] markSenderKeys for dist "+distributionId+" was " + answer);
+        if (answer == null) {
+            answer = new HashSet<>();
+            senderKeyDistributions.put(distributionId, answer);
+        }
+        answer.addAll(addresses);
+        System.err.println("[WS] markSenderKeys for dist "+distributionId+" is " + answer);
+        try {
+            storeDistributionKeys();
+        } catch (IOException ex) {
+            Logger.getLogger(WaveStore.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
     }
 
     @Override
     public void clearSenderKeySharedWith(Collection<SignalProtocolAddress> addresses) {
-        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        System.err.println("[WS] clearSenderKeys for " + addresses);
+        for (DistributionId did: senderKeyDistributions.keySet()) {
+            senderKeyDistributions.get(did).removeAll(addresses);
+        }
+        try {
+            storeDistributionKeys();
+        } catch (IOException ex) {
+            Logger.getLogger(WaveStore.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
+        }
     }
 
     @Override
     public void storeSenderKey(SignalProtocolAddress sender, UUID distributionId, SenderKeyRecord record) {
         MySenderKey msk = new MySenderKey(sender, distributionId);
+        System.err.println("Stored senderkey for sender " + sender+" and distid = " + distributionId);
         senderKeyMap.put(msk, record);
         System.err.println("stored sender, keymap = "+senderKeyMap);
         persistSenderKeys();
@@ -604,7 +651,7 @@ public class WaveStore implements SignalServiceProtocolStore {
 
     @Override
     public SenderKeyRecord loadSenderKey(SignalProtocolAddress sender, UUID distributionId) {
-        System.err.println("LSK asked for sender = "+sender);
+        System.err.println("LSK asked for sender = "+sender+" and distributionId = "+distributionId);
         System.err.println("senderdvid = "+sender.getDeviceId());
         MySenderKey msk = new MySenderKey(sender, distributionId);
         SenderKeyRecord answer = senderKeyMap.get(msk);
@@ -616,7 +663,7 @@ public class WaveStore implements SignalServiceProtocolStore {
 
     @Override
     public boolean isMultiDevice() {
-        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        return true;
     }
 
     @Override
@@ -624,6 +671,43 @@ public class WaveStore implements SignalServiceProtocolStore {
         throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
     }
 
+    
+    private void readDistributionKeys() throws IOException {
+        System.err.println("[WS] readDistributionKeys");
+        Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("distributionKeys");
+        if (Files.exists(path)) {
+            String line = Files.readString(path);
+            ObjectMapper objectMapper = new ObjectMapper();
+            senderKeyDistributions = objectMapper.readValue(line, 
+                    new TypeReference<HashMap<DistributionId, Set<SignalProtocolAddress>>>() {});
+        } else {
+            senderKeyDistributions = new HashMap();
+        }
+    }
+    
+    private void storeDistributionKeys() throws IOException {
+        WAVELOG.log(Level.INFO, "store distributionKeys");
+        Path path = SIGNAL_FX_CONTACTS_DIR.toPath().resolve("distributionKeys");
+        if (!Files.exists(path.getParent())) {
+            Files.createDirectories(path.getParent());
+        }
+        Files.deleteIfExists(path);
+        ObjectMapper objectMapper = new ObjectMapper();
+        objectMapper.writeValueAsString(senderKeyDistributions);
+    }
+
+    @Override
+    public List<SessionRecord> loadExistingSessions(List<SignalProtocolAddress> addresses) throws NoSessionException {
+        List<SessionRecord> answer = new LinkedList<>();
+        for (SignalProtocolAddress addy : addresses) {
+            if (this.containsSession(addy)) {
+                SessionRecord record = this.loadSession(addy);
+                answer.add(record);
+            }
+        }
+        return answer;
+    }
+    
     static class MySenderKey {
 
         private final SignalProtocolAddress sender;
@@ -661,6 +745,11 @@ public class WaveStore implements SignalServiceProtocolStore {
                 return false;
             }
             return true;
+        }
+        
+        @Override public String toString() {
+            return "MySenderKey, hash = " + Objects.hashCode(this)+" , sender = "+this.sender+
+                    ", distid = " + this.distributionId;
         }
     }
 
