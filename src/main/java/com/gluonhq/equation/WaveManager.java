@@ -72,6 +72,7 @@ import org.signal.zkgroup.profiles.ProfileKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.InvalidMessageException;
+import org.whispersystems.libsignal.InvalidRegistrationIdException;
 import org.whispersystems.libsignal.NoSessionException;
 import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.ecc.Curve;
@@ -519,7 +520,9 @@ public class WaveManager {
         return message.getTimestamp();
     }
 
-    public long sendGroupMessage(String uuid, String text, List<Path> attachment) throws IOException, InvalidCertificateException, InvalidInputException, UntrustedIdentityException, NoSessionException, InvalidKeyException {
+    public long sendGroupMessage(String uuid, String text, List<Path> attachment) throws IOException, 
+            InvalidCertificateException, InvalidInputException, UntrustedIdentityException, 
+            NoSessionException, InvalidKeyException, InvalidRegistrationIdException {
         ensureConnected();
         System.err.println("SENDGROUPMESSAGE, uuid = "+uuid+" and gm = "+groupMap);
         Group mygroup = groupMap.get(uuid);
