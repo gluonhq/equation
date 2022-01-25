@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.gluonhq</groupId>
     <artifactId>equation</artifactId>
-    <version>0.9.21-SNAPSHOT</version>
+    <version>0.9.21</version>
     <packaging>jar</packaging>
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -20,12 +20,12 @@
         <dependency>
           <groupId>org.whispersystems</groupId>
           <artifactId>signal-service-java</artifactId>
-          <version>2.15.4-gluon-13-SNAPSHOT</version>
+          <version>2.15.4-gluon-13</version>
         </dependency>
         <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-graphics</artifactId>
-            <version>17.0.1</version>
+            <version>17.0.2</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
