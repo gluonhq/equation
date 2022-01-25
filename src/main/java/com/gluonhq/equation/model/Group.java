@@ -34,11 +34,13 @@ public class Group {
     private String distributionName;
     
     public Group() {}
-
+    
+    @JsonIgnore
     public GroupIdentifier getIdentifier() {
         return groupIdentifier;
     }
-
+    
+    @JsonIgnore
     public void setIdentifier(GroupIdentifier identifier) {
         this.groupIdentifier = identifier;
     }

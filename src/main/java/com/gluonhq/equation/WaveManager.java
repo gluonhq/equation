@@ -77,8 +77,8 @@ import org.whispersystems.libsignal.NoSessionException;
 import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
+import org.whispersystems.libsignal.protocol.DecryptionErrorMessage;
 import org.whispersystems.libsignal.protocol.SenderKeyDistributionMessage;
-import org.whispersystems.libsignal.protocol.SignalProtos.DecryptionErrorMessage;
 import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.signalservice.api.*;
@@ -119,6 +119,7 @@ import org.whispersystems.signalservice.api.push.TrustStore;
 import org.whispersystems.signalservice.api.storage.SignalGroupV2Record;
 import org.whispersystems.signalservice.api.storage.SignalStorageManifest;
 import org.whispersystems.signalservice.api.storage.SignalStorageRecord;
+import org.whispersystems.signalservice.api.storage.StorageId;
 import org.whispersystems.signalservice.api.storage.StorageKey;
 import org.whispersystems.signalservice.api.util.CredentialsProvider;
 import org.whispersystems.signalservice.api.util.SleepTimer;
@@ -515,7 +516,7 @@ public class WaveManager {
         try {
             SendMessageResult res = sender.sendMessage(add.get(), Optional.empty(), message);
         } catch (UntrustedIdentityException ex) {
-            throw new IOException ("Could not send message! ", ex);
+            throw new IOException ("Could not send message to "+add.get(), ex);
         }
         return message.getTimestamp();
     }
@@ -549,13 +550,14 @@ public class WaveManager {
         DistributionId distribution = DistributionId.from(distributionId);
         List<UnidentifiedAccess> ua = new LinkedList();
         for (SignalServiceAddress address : mygroup.getMembers()) {
-            System.err.println("addy = " + address);
+            System.err.println("addy = " + address.getUuid());
             contacts.stream()
                     .filter(c -> !(c.getUuid().equals(getMyUuid())))
                     .filter(c -> c.getUuid().equals(address.getUuid().get().toString()))
                     .findFirst()
                     .ifPresent(cnt -> {
                         try {
+                            System.err.println("Adding to ua-list: "+cnt);
                             ua.add(ChannelUtils.getUnidentifiedAccess(cnt));
                         } catch (InvalidCertificateException ex) {
                             Logger.getLogger(WaveManager.class.getName()).log(java.util.logging.Level.SEVERE, null, ex);
@@ -949,8 +951,8 @@ public class WaveManager {
                     String encodedId = "__signal_group__v2__!" + Hex.toStringCondensed(groupId);
                     byte[] originalContent = sse.getContent();
                     int envelopeType = sse.getType();
-                    DecryptionErrorMessage decryptionErrorMessage = DecryptionErrorMessage.newBuilder().build();
-                    sender.sendRetryReceipt(addy, Optional.empty(), Optional.of(groupId), decryptionErrorMessage);
+//                    DecryptionErrorMessage decryptionErrorMessage = DecryptionErrorMessage.newBuilder().build();
+  //                  sender.sendRetryReceipt(addy, Optional.empty(), Optional.of(groupId), decryptionErrorMessage);
 
                 } else {
                     System.err.println("groupv1?");
@@ -1315,7 +1317,7 @@ public class WaveManager {
             Optional<SignalStorageManifest> storageManifest = accountManager.getStorageManifest(storageKey);
             SignalStorageManifest ssm = storageManifest.get();
             System.err.println("IDS = " + storageManifest.get().getStorageIds());
-            ssm.getAccountStorageId();
+            Optional<StorageId> accountStorageId = ssm.getAccountStorageId();
             ssm.getStorageIds().forEach(si -> {
                 System.err.println("SI = " + si.hashCode() + " with type " + si.getType() + " and bl = " + si.getRaw().length + " and si = "
                         + Arrays.toString(si.getRaw()));
