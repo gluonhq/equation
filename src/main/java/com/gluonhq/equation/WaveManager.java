@@ -1325,6 +1325,7 @@ public class WaveManager {
             List<SignalStorageRecord> records = accountManager.readStorageRecords(storageKey, ssm.getStorageIds());
             for (SignalStorageRecord record: records) {
                 System.err.println("Record "+record+" with type "+record.getType());
+try {
                 if (record.getGroupV2().isPresent()) {
                     SignalGroupV2Record gr = record.getGroupV2().get();
                     System.err.println("GROUP: "+gr.getId()+" with master "+Arrays.toString(gr.getMasterKeyBytes()));
@@ -1361,15 +1362,14 @@ public class WaveManager {
                         groupMap.put(title, group);
                     }
                 }
+} catch (Exception e) {
+System.err.println("ERR!!! " + e);
+}
             }
             storeGroups();
         } catch (IOException ex) {
             ex.printStackTrace();
         } catch (InvalidKeyException ex) {
-            ex.printStackTrace();
-        } catch (VerificationFailedException ex) {
-ex.printStackTrace();
-        } catch (InvalidGroupStateException ex) {
             ex.printStackTrace();
         }
     }
