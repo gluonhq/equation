@@ -20,8 +20,8 @@ public class Message {
     long timestamp;
     String receiverUuid;
     Group group;
-    boolean mysync;
-
+    String channelUuid;
+    
     List<Path> attachment = new LinkedList<>();
     
     public Message () {
@@ -60,8 +60,8 @@ public class Message {
         return this;
     }
     
-    public Message mySync(boolean b) {
-        this.mysync = b;
+    public Message channelUuid(String c) {
+        this.channelUuid = c;
         return this;
     }
     
@@ -90,8 +90,8 @@ public class Message {
      * is true
      * @return 
      */
-    public boolean isMySync() {
-        return mysync;
+    public String getChannelUuid() {
+        return channelUuid;
     }
 
 }

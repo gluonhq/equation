@@ -1081,7 +1081,7 @@ public class WaveManager {
     }
     void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm, 
             SignalServiceAddress receiver) {
-        processDataMessage(sender, ssdm, receiver, false);
+        processDataMessage(sender, ssdm, receiver, sender.getIdentifier());
     }
     
     /**
@@ -1089,11 +1089,12 @@ public class WaveManager {
      * @param sender
      * @param ssdm
      * @param receiver
-     * @param mySync true in case this message is sent from one of our other devices. This 
-     * is important since in that case, the client wants to show it in the channel of the receiver
+     * @param channelUuid the channel this message should be stored in. Typically, this is the
+     * sender identifier, but in case this message is sent from one of our other devices, this is
+     * either the receiver identifier or a group identifier.
      */
     void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm, 
-            SignalServiceAddress receiver, boolean mySync) {
+            SignalServiceAddress receiver, String channelUuid) {
         WAVELOG.log(Level.INFO, "Process datamessage");
         if (this.messageListener != null) {
             String uuid = sender.getUuid().get().toString();
@@ -1102,7 +1103,7 @@ public class WaveManager {
             if (content != null) {
                 Message message = new Message();
                 message.senderUuid(uuid).content(content).timestamp(ssdm.getTimestamp())
-                        .receiverUuid(recuuid).mySync(mySync);
+                        .receiverUuid(recuuid).channelUuid(channelUuid);
                 this.messageListener.gotMessage(message);
 
 //                this.messageListener.gotMessage(uuid, content, ssdm.getTimestamp(), recuuid);
@@ -1128,12 +1129,18 @@ public class WaveManager {
     }
 
     private void processSentTranscriptMessage(SignalServiceAddress sender, SentTranscriptMessage msg) {
-        WAVELOG.log(Level.DEBUG, "ProcessSentTranscriptMessage with sender = " + sender+" and msg = "+msg.getMessage());
+        WAVELOG.log(Level.DEBUG, "ProcessSentTranscriptMessage with sender = " + sender.getIdentifier()+" and msg = "+msg.getMessage());
         SignalServiceDataMessage message = msg.getMessage();
         if (msg.getDestination().isPresent()) {
-            processDataMessage(sender, msg.getMessage(), msg.getDestination().get(), true);
+            SignalServiceAddress dest = msg.getDestination().get();
+            processDataMessage(sender, msg.getMessage(), dest, dest.getIdentifier());
         } else if (message.isGroupV2Message()) {
             WAVELOG.log(Level.DEBUG, "WaveManager GROUPv2message");
+            msg.getDestination().ifPresentOrElse(d -> System.err.println("dest = "+d), () -> System.err.println("no dest"));
+            message.getGroupId().ifPresent(g -> {System.err.println("GID = "+Arrays.toString(g));});
+            processDataMessage(sender, message);
+
+     //       GroupMasterKey masterKey = message.getGroupContext().get().getGroupV2().get().getMasterKey();
         } else if (message.isGroupV2Update()) {
             WAVELOG.log(Level.DEBUG, "WaveManager GROUPv2Update");
         }
