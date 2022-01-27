@@ -1079,16 +1079,33 @@ public class WaveManager {
             }
         }
     }
-
     void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm, 
             SignalServiceAddress receiver) {
+        processDataMessage(sender, ssdm, receiver, false);
+    }
+    
+    /**
+     * Pass an incoming data message to the client.
+     * @param sender
+     * @param ssdm
+     * @param receiver
+     * @param mySync true in case this message is sent from one of our other devices. This 
+     * is important since in that case, the client wants to show it in the channel of the receiver
+     */
+    void processDataMessage(SignalServiceAddress sender, SignalServiceDataMessage ssdm, 
+            SignalServiceAddress receiver, boolean mySync) {
         WAVELOG.log(Level.INFO, "Process datamessage");
         if (this.messageListener != null) {
             String uuid = sender.getUuid().get().toString();
             String recuuid = receiver.getUuid().get().toString();
             String content = ssdm.getBody().orElse(null);
             if (content != null) {
-                this.messageListener.gotMessage(uuid, content, ssdm.getTimestamp(), recuuid);
+                Message message = new Message();
+                message.senderUuid(uuid).content(content).timestamp(ssdm.getTimestamp())
+                        .receiverUuid(recuuid).mySync(mySync);
+                this.messageListener.gotMessage(message);
+
+//                this.messageListener.gotMessage(uuid, content, ssdm.getTimestamp(), recuuid);
             }
         }
     }
@@ -1114,7 +1131,7 @@ public class WaveManager {
         WAVELOG.log(Level.DEBUG, "ProcessSentTranscriptMessage with sender = " + sender+" and msg = "+msg.getMessage());
         SignalServiceDataMessage message = msg.getMessage();
         if (msg.getDestination().isPresent()) {
-            processDataMessage(sender, msg.getMessage(), msg.getDestination().get());
+            processDataMessage(sender, msg.getMessage(), msg.getDestination().get(), true);
         } else if (message.isGroupV2Message()) {
             WAVELOG.log(Level.DEBUG, "WaveManager GROUPv2message");
         } else if (message.isGroupV2Update()) {

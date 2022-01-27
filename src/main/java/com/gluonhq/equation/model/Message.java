@@ -20,6 +20,7 @@ public class Message {
     long timestamp;
     String receiverUuid;
     Group group;
+    boolean mysync;
 
     List<Path> attachment = new LinkedList<>();
     
@@ -59,6 +60,11 @@ public class Message {
         return this;
     }
     
+    public Message mySync(boolean b) {
+        this.mysync = b;
+        return this;
+    }
+    
     public String getSenderUuid() {
         return senderUuid;
     }
@@ -78,5 +84,14 @@ public class Message {
     public List<Path> getAttachment() {
         return attachment;
     }
-    
+
+    /**
+     * If this message is a sync message from one of my other devices, this
+     * is true
+     * @return 
+     */
+    public boolean isMySync() {
+        return mysync;
+    }
+
 }

@@ -20,7 +20,7 @@ public interface MessagingClient {
      * @param content the (text) content of the message
      * @param timestamp the timestamp that the server received the message
      */
-    void gotMessage(String senderUuid, String content, long timestamp);
+ //   void gotMessage(String senderUuid, String content, long timestamp);
 
     /**
      * Called when a message for the the specified receiver is available.
@@ -33,7 +33,7 @@ public interface MessagingClient {
      * @param receiverUuid the receiver for this message
      */
 
-    void gotMessage(String senderUuid, String content, long timestamp, String receiverUuid);
+    //void gotMessage(String senderUuid, String content, long timestamp, String receiverUuid);
 
     /**
      * Called when a message is available
